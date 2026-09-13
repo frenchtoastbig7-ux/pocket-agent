@@ -14,6 +14,19 @@ JAVA_HOME=/opt/homebrew/opt/openjdk@21/libexec/openjdk.jdk/Contents/Home ./gradl
 
 The APK is written to `app/build/outputs/apk/debug/app-debug.apk`.
 
+For a signed, shrunk release build (application ID `com.sovereignedge.pocketagent`), put your keystore details in `~/.gradle/gradle.properties`. Never put them in this repo.
+
+```properties
+pocketagent.storeFile=/path/to/pocketagent-release.jks
+pocketagent.storePassword=...
+pocketagent.keyAlias=pocketagent
+pocketagent.keyPassword=...
+```
+
+```bash
+./gradlew assembleRelease -Pminify
+```
+
 ## Install on GrapheneOS
 
 1. Copy the APK to the phone and open it. GrapheneOS will ask you to allow installs from that source, once.
@@ -94,7 +107,7 @@ POCKET_AGENT_LIVE_TEST=1 ANTHROPIC_API_KEY=sk-ant-... ./gradlew testDebugUnitTes
 
 ## Known limits
 
-- The debug APK is about 65 MB, because it's unminified and the SDK pulls in Jackson, kotlin-reflect and a JSON-schema generator. R8 could shrink it but needs keep rules for Jackson.
+- The release APK is about 25 MB after R8 shrinking (`./gradlew assembleRelease -Pminify`). The debug APK is about 65 MB. Most of the size is the Anthropic SDK's model classes, which `app/proguard-rules.pro` keeps whole because Jackson reaches them through reflection.
 - Apps that set FLAG_SECURE return black screenshots. `read_screen` usually still works on them.
 - A chat's model, effort, instructions, memory and skill index are fixed when the chat starts. Use **New chat** to pick up changes.
 - Long screen-control sessions resend earlier screenshots on every request. Start a new chat for unrelated tasks.

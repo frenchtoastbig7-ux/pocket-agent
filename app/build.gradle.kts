@@ -12,11 +12,35 @@ android {
     }
 
     defaultConfig {
-        applicationId = "dev.pocketagent"
+        applicationId = "com.sovereignedge.pocketagent"
         minSdk = 33
         targetSdk = 36
         versionCode = 1
         versionName = "0.1.0"
+    }
+
+    // Release signing reads from ~/.gradle/gradle.properties so keys and passwords never live in this repo:
+    // pocketagent.storeFile, pocketagent.storePassword, pocketagent.keyAlias, pocketagent.keyPassword
+    val releaseKeystore = providers.gradleProperty("pocketagent.storeFile").orNull
+    if (releaseKeystore != null) {
+        signingConfigs {
+            create("release") {
+                storeFile = file(releaseKeystore)
+                storePassword = providers.gradleProperty("pocketagent.storePassword").get()
+                keyAlias = providers.gradleProperty("pocketagent.keyAlias").get()
+                keyPassword = providers.gradleProperty("pocketagent.keyPassword").get()
+            }
+        }
+    }
+
+    buildTypes {
+        release {
+            if (releaseKeystore != null) signingConfig = signingConfigs.getByName("release")
+            // Experimental: ./gradlew assembleRelease -Pminify
+            isMinifyEnabled = providers.gradleProperty("minify").isPresent
+            isShrinkResources = providers.gradleProperty("minify").isPresent
+            proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
+        }
     }
 
     compileOptions {
