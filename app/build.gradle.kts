@@ -34,6 +34,10 @@ android {
     }
 
     buildTypes {
+        debug {
+            // Test builds install alongside the signed release instead of clashing with its signature.
+            applicationIdSuffix = ".debug"
+        }
         release {
             if (releaseKeystore != null) signingConfig = signingConfigs.getByName("release")
             // Experimental: ./gradlew assembleRelease -Pminify
