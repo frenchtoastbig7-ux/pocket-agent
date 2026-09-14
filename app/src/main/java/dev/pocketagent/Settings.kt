@@ -30,6 +30,20 @@ class Settings(context: Context) {
         get() = prefs.getBoolean("secure_window", true)
         set(value) = prefs.edit().putBoolean("secure_window", value).apply()
 
+    /** Whether the Claude Code bridge should be running. */
+    var bridgeEnabled: Boolean
+        get() = prefs.getBoolean("bridge_enabled", false)
+        set(value) = prefs.edit().putBoolean("bridge_enabled", value).apply()
+
+    var bridgePort: Int
+        get() = prefs.getInt("bridge_port", 8765)
+        set(value) = prefs.edit().putInt("bridge_port", value.coerceIn(1024, 65535)).apply()
+
+    /** "vpn" listens on VPN addresses only; "loopback" listens on 127.0.0.1 for `adb forward` over USB. */
+    var bridgeBind: String
+        get() = prefs.getString("bridge_bind", "vpn")!!
+        set(value) = prefs.edit().putString("bridge_bind", value).apply()
+
     fun isEnabled(group: ToolGroup): Boolean = prefs.getBoolean("group_${group.name}", true)
     fun setEnabled(group: ToolGroup, enabled: Boolean) = prefs.edit().putBoolean("group_${group.name}", enabled).apply()
 

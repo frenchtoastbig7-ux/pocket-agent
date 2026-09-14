@@ -68,6 +68,15 @@
                 android:value="On-device assistant task that must keep running while the user is in other apps" />
         </service>
 
+        <service
+            android:name=".bridge.BridgeService"
+            android:exported="false"
+            android:foregroundServiceType="specialUse">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="Local MCP server that lets the user's own Claude Code session use phone tools over their private VPN" />
+        </service>
+
         <receiver
             android:name=".schedule.ScheduleReceiver"
             android:exported="false">

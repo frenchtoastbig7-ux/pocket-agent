@@ -75,12 +75,18 @@ fun SettingsScreen(app: PocketAgentApp, voice: Voice, onSecureWindowChanged: (Bo
     Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
         Text("Settings", style = MaterialTheme.typography.titleLarge)
 
-        Heading("Claude API")
+        BridgeSection(app)
+
+        Heading("Claude API (optional standalone mode)")
+        Text(
+            "Lets Pocket Agent's own chat, memory and automations run without your computer. Billed per token through a Claude Console API key.",
+            style = MaterialTheme.typography.bodySmall,
+        )
         if (hasKey) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text("API key saved, encrypted by the phone's Keystore.", Modifier.weight(1f))
                 TextButton(onClick = {
-                    app.secrets.clear()
+                    app.secrets.clearApiKey()
                     app.factory.forgetClient()
                     hasKey = false
                 }) { Text("Remove") }

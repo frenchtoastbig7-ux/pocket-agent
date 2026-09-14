@@ -2,6 +2,7 @@ package dev.pocketagent
 
 import android.app.Application
 import dev.pocketagent.agent.AgentFactory
+import dev.pocketagent.bridge.BridgeService
 import dev.pocketagent.device.Notifications
 import dev.pocketagent.memory.MemoryStore
 import dev.pocketagent.memory.SessionStore
@@ -13,6 +14,7 @@ import dev.pocketagent.tools.Workspace
 class PocketAgentApp : Application() {
     lateinit var settings: Settings
     lateinit var secrets: SecretStore
+    lateinit var approvals: ApprovalBroker
     lateinit var memory: MemoryStore
     lateinit var skills: SkillStore
     lateinit var sessions: SessionStore
@@ -26,6 +28,7 @@ class PocketAgentApp : Application() {
         super.onCreate()
         settings = Settings(this)
         secrets = SecretStore(this)
+        approvals = ApprovalBroker(this)
         memory = MemoryStore(this)
         skills = SkillStore(this)
         sessions = SessionStore(this)
@@ -39,8 +42,9 @@ class PocketAgentApp : Application() {
         scheduler.rearmAll()
     }
 
-    /** Removes everything the agent has stored: key, settings, memory, skills, chat history, automations, workspace. */
+    /** Removes everything: API key, bridge token, settings, memory, skills, chat history, automations, workspace. */
     fun wipeEverything() {
+        BridgeService.stop(this)
         controller.newChat()
         scheduler.cancelAll()
         schedules.clear()
@@ -49,7 +53,7 @@ class PocketAgentApp : Application() {
         sessions.deleteAll()
         workspace.root.listFiles()?.forEach { it.deleteRecursively() }
         factory.forgetClient()
-        secrets.clear()
+        secrets.wipe()
         settings.clear()
     }
 }

@@ -66,6 +66,27 @@ class AgentFactory(private val app: PocketAgentApp) {
         )
     }
 
+    /**
+     * Phone tools offered to Claude Code over the bridge. Memory, skills, automations, sub-agents and web search are
+     * left out because Claude Code has its own.
+     */
+    fun bridgeTools(): List<AgentTool> {
+        val s = app.settings
+        return buildList {
+            if (s.isEnabled(ToolGroup.PERSONAL)) addAll(
+                listOf(
+                    SearchContactsTool(app), ListSmsTool(app), SendSmsTool(app), ListCalendarEventsTool(app),
+                    CreateCalendarEventTool(app), ListCallLogTool(app), ListNotificationsTool(app),
+                )
+            )
+            if (s.isEnabled(ToolGroup.FILES)) addAll(listOf(ListFilesTool(app.workspace), ReadFileTool(app.workspace), WriteFileTool(app.workspace)))
+            if (s.isEnabled(ToolGroup.DEVICE)) addAll(listOf(DeviceStatusTool(app), ListAppsTool(app), OpenAppTool(app)))
+            if (s.isEnabled(ToolGroup.SCREEN)) addAll(
+                listOf(ReadScreenTool(), ScreenshotTool(), TapTool(), TypeTextTool(), ScrollTool(), SwipeTool(), GlobalActionTool())
+            )
+        }
+    }
+
     private fun tools(mode: RunMode, currentSession: () -> Long?): List<AgentTool> {
         val s = app.settings
         val all = buildList {

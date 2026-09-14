@@ -180,7 +180,10 @@ class ScheduleReceiver : BroadcastReceiver() {
                 context.startForegroundService(AgentRunService.scheduledRunIntent(context, id))
             }
             Intent.ACTION_BOOT_COMPLETED,
-            Intent.ACTION_MY_PACKAGE_REPLACED,
+            Intent.ACTION_MY_PACKAGE_REPLACED -> {
+                app.scheduler.rearmAll()
+                if (app.settings.bridgeEnabled) dev.pocketagent.bridge.BridgeService.start(context)
+            }
             AlarmManager.ACTION_SCHEDULE_EXACT_ALARM_PERMISSION_STATE_CHANGED -> app.scheduler.rearmAll()
         }
     }

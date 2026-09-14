@@ -35,11 +35,11 @@ class MainActivity : ComponentActivity() {
 
     override fun onResume() {
         super.onResume()
-        (application as PocketAgentApp).controller.uiVisible = true
+        (application as PocketAgentApp).approvals.uiVisible = true
     }
 
     override fun onPause() {
-        (application as PocketAgentApp).controller.uiVisible = false
+        (application as PocketAgentApp).approvals.uiVisible = false
         super.onPause()
     }
 

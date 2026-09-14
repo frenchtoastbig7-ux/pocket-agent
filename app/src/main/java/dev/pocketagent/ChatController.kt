@@ -6,15 +6,11 @@ import com.anthropic.errors.RateLimitException
 import com.anthropic.errors.UnauthorizedException
 import dev.pocketagent.agent.AgentEvent
 import dev.pocketagent.agent.AgentLoop
-import dev.pocketagent.agent.ApprovalDecision
 import dev.pocketagent.agent.Approver
 import dev.pocketagent.agent.RunMode
 import dev.pocketagent.agent.ToolStatus
-import dev.pocketagent.device.AgentAccessibilityService
 import dev.pocketagent.device.AgentRunService
-import dev.pocketagent.device.Notifications
 import kotlinx.coroutines.CancellationException
-import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -35,20 +31,13 @@ data class ChatItem(
     enum class Kind { USER, ASSISTANT, THINKING, TOOL, NOTICE }
 }
 
-class PendingApproval(val title: String, val summary: String, val allowForTask: Boolean, val decision: CompletableDeferred<ApprovalDecision>)
-
-/** The interactive chat: owns the current [AgentLoop], exposes UI state, and routes approvals to the screen or overlay. */
+/** The in-app chat (API-key mode): owns the current [AgentLoop] and exposes UI state. Approvals go through [ApprovalBroker]. */
 class ChatController(private val app: PocketAgentApp) {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
 
     val items = MutableStateFlow<List<ChatItem>>(emptyList())
     val running = MutableStateFlow(false)
-    val pending = MutableStateFlow<PendingApproval?>(null)
     val finishedReplies = MutableSharedFlow<String>(extraBufferCapacity = 4)
-
-    /** True while MainActivity is resumed; otherwise approvals go to the accessibility overlay or a notification. */
-    @Volatile
-    var uiVisible = false
 
     private var loop: AgentLoop? = null
     private var sessionId: Long? = null
@@ -59,30 +48,11 @@ class ChatController(private val app: PocketAgentApp) {
     private val toolItems = HashMap<String, Long>()
 
     private val approver = Approver { tool, summary, allowForTask ->
-        val decision = CompletableDeferred<ApprovalDecision>()
-        val title = "Allow ${tool.name.replace('_', ' ')}?"
-        withContext(Dispatchers.Main) {
-            val overlay = AgentAccessibilityService.instance
-            if (!uiVisible && overlay != null) {
-                overlay.showApproval(title, summary, allowForTask) { decision.complete(it) }
-            } else {
-                pending.value = PendingApproval(title, summary, allowForTask, decision)
-                if (!uiVisible) Notifications.approvalNeeded(app, title)
-            }
-        }
-        try {
-            decision.await()
-        } finally {
-            withContext(Dispatchers.Main) {
-                pending.value = null
-                AgentAccessibilityService.instance?.dismissApproval()
-                Notifications.clearApproval(app)
-            }
-        }
-    }
-
-    fun resolveApproval(decision: ApprovalDecision) {
-        pending.value?.decision?.complete(decision)
+        app.approvals.request(
+            title = "Allow ${tool.name.replace('_', ' ')}?",
+            summary = summary,
+            forTaskLabel = if (allowForTask) "Allow for task" else null,
+        )
     }
 
     fun send(text: String) {
@@ -90,7 +60,7 @@ class ChatController(private val app: PocketAgentApp) {
         if (running.value || message.isEmpty()) return
         val client = app.factory.client()
         if (client == null) {
-            add(ChatItem.Kind.NOTICE, "Add your Anthropic API key in Settings first.")
+            add(ChatItem.Kind.NOTICE, "Add your Anthropic API key in Settings first, or use Claude Code through the bridge.")
             return
         }
         val loop = loop ?: app.factory.newLoop(client, RunMode.INTERACTIVE, approver) { sessionId }.also { loop = it }
@@ -115,15 +85,14 @@ class ChatController(private val app: PocketAgentApp) {
                 add(ChatItem.Kind.NOTICE, describeError(e))
             } finally {
                 running.value = false
-                pending.value = null
                 AgentRunService.stopInteractive(app)
             }
         }
     }
 
+    /** Cancelling the turn also cancels any approval it is waiting on. */
     fun stop() {
         job?.cancel()
-        pending.value?.decision?.complete(ApprovalDecision.DENY)
     }
 
     /** Ends the session. Memory written during it shows up in the next chat's prompt. */

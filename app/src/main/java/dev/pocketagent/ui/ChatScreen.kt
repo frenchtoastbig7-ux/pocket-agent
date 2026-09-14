@@ -50,7 +50,7 @@ fun ChatScreen(app: PocketAgentApp, voice: Voice, assistLaunch: MutableState<Boo
     val controller = app.controller
     val items by controller.items.collectAsState()
     val running by controller.running.collectAsState()
-    val pending by controller.pending.collectAsState()
+    val pending by app.approvals.pending.collectAsState()
     var input by rememberSaveable { mutableStateOf("") }
     var listening by remember { mutableStateOf(false) }
     val listState = rememberLazyListState()
@@ -155,13 +155,13 @@ fun ChatScreen(app: PocketAgentApp, voice: Voice, assistLaunch: MutableState<Boo
             },
             confirmButton = {
                 Row {
-                    if (approval.allowForTask) {
-                        TextButton(onClick = { controller.resolveApproval(ApprovalDecision.FOR_TASK) }) { Text("Allow for task") }
+                    approval.forTaskLabel?.let { label ->
+                        TextButton(onClick = { app.approvals.resolve(ApprovalDecision.FOR_TASK) }) { Text(label) }
                     }
-                    TextButton(onClick = { controller.resolveApproval(ApprovalDecision.ONCE) }) { Text("Allow") }
+                    TextButton(onClick = { app.approvals.resolve(ApprovalDecision.ONCE) }) { Text("Allow") }
                 }
             },
-            dismissButton = { TextButton(onClick = { controller.resolveApproval(ApprovalDecision.DENY) }) { Text("Deny") } },
+            dismissButton = { TextButton(onClick = { app.approvals.resolve(ApprovalDecision.DENY) }) { Text("Deny") } },
         )
     }
 }

@@ -17,3 +17,9 @@
 # JVM-only reflection types referenced by Jackson's Java 7 support and the SDK's structured-output helpers.
 -dontwarn java.beans.**
 -dontwarn java.lang.reflect.AnnotatedType
+
+# Claude Code bridge: MCP SDK protocol types are kotlinx.serialization classes looked up by name at runtime.
+-keep class io.modelcontextprotocol.** { *; }
+-keepclassmembers class **$$serializer { *; }
+# Ktor's IntelliJ debugger detection references JVM management APIs that Android doesn't have.
+-dontwarn java.lang.management.**

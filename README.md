@@ -27,6 +27,33 @@ pocketagent.keyPassword=...
 ./gradlew assembleRelease -Pminify
 ```
 
+## Two ways to run it
+
+| | Claude Code bridge | Standalone (API key) |
+|---|---|---|
+| Model access | Claude Code on your computer, on your **Pro or Max** plan | A Claude Console API key, billed per token |
+| Where you chat | The official Claude app (Remote Control) or Claude Code itself | Pocket Agent's own chat |
+| What Pocket Agent does | Provides phone tools over MCP, and asks you to approve actions | Runs the whole agent: memory, skills, automations, sub-agents |
+| Needs your computer on | Yes | No |
+
+Anthropic only allows Claude subscription logins in Claude Code and its other native apps. Third-party apps may not offer a claude.ai login, or pass requests through subscription credentials. See [Claude Code legal and compliance](https://code.claude.com/docs/en/legal-and-compliance). So Pocket Agent never asks for or stores your Claude login. In bridge mode, Claude Code is the agent and Pocket Agent is a tool server.
+
+## Use your Claude subscription (bridge)
+
+1. **Tailscale on both devices.** On the phone, install Tailscale from F-Droid (`com.tailscale.ipn`) and connect. On the Mac, install it with `brew install --cask tailscale`, open it and sign in to the same tailnet.
+2. **Start the bridge.** In Pocket Agent, open **Settings › Claude Code bridge** and turn on **Run bridge**. It listens only on the phone's Tailscale address (100.x.y.z), port 8765, and every request needs a random 256-bit token.
+3. **Connect Claude Code.** Tap **Copy command** or **Share** and run the command on the Mac. Taildrop is an easy way to move it.
+   ```bash
+   claude mcp add --transport http --scope user phone http://100.x.y.z:8765/mcp --header "Authorization: Bearer <token>"
+   ```
+   Check the connection with `claude mcp list`.
+4. **Chat from the phone.** On the Mac, start `claude remote-control` in any folder. Open the Claude app on the phone, then open that session from the Code tab. Ask for things like "what did I miss in my notifications this morning?" or "text Sam I'm running late".
+5. **Approve on the phone.** Anything that sends, taps, types or changes data waits for your approval on the phone. With screen control enabled, the prompt appears on top of the Claude app; otherwise it arrives as a notification. It times out and is denied after 2 minutes. "Allow 15 min" skips repeat prompts for that one tool, but never for sending SMS. These tools are also marked `anthropic/requiresUserInteraction`, so Claude Code shows its own full permission prompt as well.
+
+There is also a USB option: choose **USB (adb forward)**, run `adb forward tcp:8765 tcp:8765`, and use `http://127.0.0.1:8765/mcp` in the command.
+
+In bridge mode, memory, skills and scheduled tasks come from Claude Code (CLAUDE.md, skills, `/loop` and routines), not from Pocket Agent.
+
 ## Install on GrapheneOS
 
 1. Copy the APK to the phone and open it. GrapheneOS will ask you to allow installs from that source, once.
@@ -99,7 +126,22 @@ When you're in another app, approval prompts appear as an overlay drawn by the a
 - history replay across turns
 - that the request shape is accepted
 
-It only runs when you opt in:
+`BridgeServerTest` starts the real bridge server on your computer's loopback interface and uses the MCP Kotlin client to check four things:
+- a missing or wrong token gets 401
+- tools are listed
+- reads run
+- the approval gate, including the 15-minute window
+
+`BridgeServerDeviceTest` runs the same server on Android's runtime, on a device or emulator:
+
+```bash
+./gradlew connectedDebugAndroidTest
+./gradlew connectedReleaseAndroidTest -Pminify -PtestRelease
+```
+
+The second command tests the R8-shrunk release. `-PtestRelease` adds `app/proguard-test-release.pro`, which keeps only what the instrumentation APK borrows from the app.
+
+The live test only runs when you opt in:
 
 ```bash
 POCKET_AGENT_LIVE_TEST=1 ANTHROPIC_API_KEY=sk-ant-... ./gradlew testDebugUnitTest --tests '*AgentLoopLiveTest*'

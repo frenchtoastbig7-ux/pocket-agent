@@ -14,7 +14,9 @@ import dev.pocketagent.R
 object Notifications {
     const val RUNNING_ID = 1
     private const val APPROVAL_ID = 2
+    const val BRIDGE_ID = 3
     private const val CH_RUNNING = "running"
+    private const val CH_BRIDGE = "bridge"
     private const val CH_APPROVAL = "approval"
     private const val CH_AUTOMATION = "automation"
 
@@ -23,6 +25,7 @@ object Notifications {
         nm.createNotificationChannels(
             listOf(
                 NotificationChannel(CH_RUNNING, "Agent working", NotificationManager.IMPORTANCE_LOW),
+                NotificationChannel(CH_BRIDGE, "Claude Code bridge", NotificationManager.IMPORTANCE_LOW),
                 NotificationChannel(CH_APPROVAL, "Approval requests", NotificationManager.IMPORTANCE_HIGH),
                 NotificationChannel(CH_AUTOMATION, "Automation results", NotificationManager.IMPORTANCE_DEFAULT),
             ).onEach { it.lockscreenVisibility = Notification.VISIBILITY_PRIVATE }
@@ -50,6 +53,26 @@ object Notifications {
             .setVisibility(Notification.VISIBILITY_PRIVATE)
             .build()
     }
+
+    fun bridge(context: Context, state: String): Notification {
+        val stop = PendingIntent.getService(
+            context, 2,
+            dev.pocketagent.bridge.BridgeService.stopIntent(context),
+            PendingIntent.FLAG_IMMUTABLE,
+        )
+        return Notification.Builder(context, CH_BRIDGE)
+            .setSmallIcon(R.drawable.ic_stat_agent)
+            .setContentTitle("Claude Code bridge")
+            .setContentText(state)
+            .setOngoing(true)
+            .setContentIntent(openApp(context))
+            .addAction(Notification.Action.Builder(Icon.createWithResource(context, R.drawable.ic_stat_agent), "Stop", stop).build())
+            .setVisibility(Notification.VISIBILITY_PRIVATE)
+            .build()
+    }
+
+    fun updateBridge(context: Context, state: String) =
+        context.getSystemService(NotificationManager::class.java).notify(BRIDGE_ID, bridge(context, state))
 
     fun approvalNeeded(context: Context, title: String) {
         val n = Notification.Builder(context, CH_APPROVAL)

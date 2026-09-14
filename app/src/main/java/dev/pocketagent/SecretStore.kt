@@ -6,42 +6,57 @@ import android.security.keystore.KeyProperties
 import android.security.keystore.StrongBoxUnavailableException
 import android.util.Base64
 import java.security.KeyStore
+import java.security.SecureRandom
 import javax.crypto.Cipher
 import javax.crypto.KeyGenerator
 import javax.crypto.SecretKey
 import javax.crypto.spec.GCMParameterSpec
 
 /**
- * Holds the Anthropic API key encrypted with an AES-256-GCM key that never leaves the Android Keystore
- * (StrongBox / Titan M2 when available). Only the ciphertext is written to app-private storage, and
- * allowBackup=false keeps it out of device backups.
+ * Secrets encrypted with an AES-256-GCM key that never leaves the Android Keystore (StrongBox / Titan M2 when
+ * available): the Anthropic API key, and the bearer token Claude Code uses to reach the phone bridge.
+ * Only ciphertext is written to app-private storage, and allowBackup=false keeps it out of device backups.
  */
 class SecretStore(context: Context) {
     private val prefs = context.getSharedPreferences("secrets", Context.MODE_PRIVATE)
 
-    fun hasApiKey(): Boolean = prefs.contains(PREF_KEY)
+    fun hasApiKey(): Boolean = prefs.contains(API_KEY)
+    fun putApiKey(value: String) = put(API_KEY, value.trim())
+    fun apiKey(): String? = get(API_KEY)
+    fun clearApiKey() = prefs.edit().remove(API_KEY).apply()
 
-    fun putApiKey(value: String) {
-        val cipher = Cipher.getInstance(TRANSFORMATION)
-        cipher.init(Cipher.ENCRYPT_MODE, keystoreKey())
-        val ciphertext = cipher.doFinal(value.trim().toByteArray(Charsets.UTF_8))
-        val encoded = b64(cipher.iv) + ":" + b64(ciphertext)
-        prefs.edit().putString(PREF_KEY, encoded).apply()
+    /** The bridge bearer token, created on first use. */
+    fun bridgeToken(): String = get(BRIDGE_TOKEN) ?: rotateBridgeToken()
+
+    /** Replaces the bridge token; Claude Code must be reconfigured with the new one. */
+    fun rotateBridgeToken(): String {
+        val bytes = ByteArray(32).also { SecureRandom().nextBytes(it) }
+        val token = Base64.encodeToString(bytes, Base64.URL_SAFE or Base64.NO_WRAP or Base64.NO_PADDING)
+        put(BRIDGE_TOKEN, token)
+        return token
     }
 
-    fun apiKey(): String? {
-        val stored = prefs.getString(PREF_KEY, null) ?: return null
+    /** Deletes every secret and the Keystore key itself. */
+    fun wipe() {
+        prefs.edit().clear().apply()
+        runCatching { KeyStore.getInstance(ANDROID_KEYSTORE).apply { load(null) }.deleteEntry(ALIAS) }
+    }
+
+    private fun put(name: String, value: String) {
+        val cipher = Cipher.getInstance(TRANSFORMATION)
+        cipher.init(Cipher.ENCRYPT_MODE, keystoreKey())
+        val ciphertext = cipher.doFinal(value.toByteArray(Charsets.UTF_8))
+        prefs.edit().putString(name, b64(cipher.iv) + ":" + b64(ciphertext)).apply()
+    }
+
+    private fun get(name: String): String? {
+        val stored = prefs.getString(name, null) ?: return null
         val (iv, ciphertext) = stored.split(":").takeIf { it.size == 2 }?.map { unb64(it) } ?: return null
         return runCatching {
             val cipher = Cipher.getInstance(TRANSFORMATION)
             cipher.init(Cipher.DECRYPT_MODE, keystoreKey(), GCMParameterSpec(128, iv))
             String(cipher.doFinal(ciphertext), Charsets.UTF_8)
         }.getOrNull()
-    }
-
-    fun clear() {
-        prefs.edit().remove(PREF_KEY).apply()
-        runCatching { KeyStore.getInstance(ANDROID_KEYSTORE).apply { load(null) }.deleteEntry(ALIAS) }
     }
 
     private fun keystoreKey(): SecretKey {
@@ -73,7 +88,8 @@ class SecretStore(context: Context) {
     private companion object {
         const val ANDROID_KEYSTORE = "AndroidKeyStore"
         const val ALIAS = "anthropic_api_key_wrap"
-        const val PREF_KEY = "anthropic_api_key"
+        const val API_KEY = "anthropic_api_key"
+        const val BRIDGE_TOKEN = "bridge_token"
         const val TRANSFORMATION = "AES/GCM/NoPadding"
     }
 }

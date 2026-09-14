@@ -255,7 +255,7 @@ class AgentAccessibilityService : AccessibilityService() {
      * Shows an approval card over whatever app is in front. The agent loop is suspended while this is up and tools
      * run one at a time, so the agent can never dispatch a gesture that lands on its own Allow button.
      */
-    fun showApproval(title: String, detail: String, allowForTask: Boolean, onDecision: (ApprovalDecision) -> Unit) {
+    fun showApproval(title: String, detail: String, forTaskLabel: String?, onDecision: (ApprovalDecision) -> Unit) {
         main.post {
             removeOverlay()
             val dp = resources.displayMetrics.density
@@ -297,7 +297,7 @@ class AgentAccessibilityService : AccessibilityService() {
                 }
             }
             row.addView(button("Deny", ApprovalDecision.DENY))
-            if (allowForTask) row.addView(button("Allow for task", ApprovalDecision.FOR_TASK))
+            if (forTaskLabel != null) row.addView(button(forTaskLabel, ApprovalDecision.FOR_TASK))
             row.addView(button("Allow once", ApprovalDecision.ONCE))
             card.addView(row)
 
