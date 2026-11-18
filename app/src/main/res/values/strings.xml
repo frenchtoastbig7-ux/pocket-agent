@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Pocket Agent</string>
+    <string name="accessibility_description">Lets Pocket Agent read what is on screen and tap, type and scroll in other apps when you ask it to. Every action is shown to you for approval first.</string>
+</resources>
