@@ -144,8 +144,9 @@ class BridgeService : Service() {
                     server = candidate
                     boundHost = host
                     status.value = Status.Running(host, port)
+                    // Inside the guard, so a service that has since been destroyed can't post "Listening".
+                    Notifications.updateBridge(this@BridgeService, "Listening on $host:$port")
                 }
-                Notifications.updateBridge(this@BridgeService, "Listening on $host:$port")
             }
         }
     }

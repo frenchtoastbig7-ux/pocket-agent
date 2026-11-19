@@ -80,7 +80,11 @@ class MemoryStore(context: Context) {
         }
     }
 
-    fun clear() = Target.entries.forEach { File(dir, it.fileName).delete() }
+    /** Waits for a write in progress, then removes its result too (and any temp file a failed write left). */
+    @Synchronized
+    fun clear() {
+        dir.listFiles()?.forEach { it.delete() }
+    }
 
     private fun uniqueMatch(entries: List<String>, oldText: String): Int {
         val needle = oldText.trim()

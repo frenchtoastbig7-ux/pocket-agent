@@ -110,7 +110,25 @@ class AgentLoop(
                     when (message.stopReason().getOrNull()) {
                         BetaStopReason.TOOL_USE -> {
                             history += assistantMessage(content)
-                            val results = runTools(content.mapNotNull { it.toolUse().getOrNull() }, emit)
+                            val uses = content.mapNotNull { it.toolUse().getOrNull() }
+                            val results = mutableListOf<BetaContentBlockParam>()
+                            try {
+                                runTools(uses, emit, results)
+                            } catch (t: Throwable) {
+                                // Stopped partway through the round (a Stop while a later action waited for approval,
+                                // say). What already ran stays on record; the calls that got no answer are closed so
+                                // the conversation is still valid for the next request.
+                                if (results.isNotEmpty()) {
+                                    uses.drop(results.size).forEach {
+                                        results += BetaContentBlockParam.ofToolResult(
+                                            toolResult(it.id(), ToolOutput.error("The turn was stopped before this action finished. It may not have run."))
+                                        )
+                                    }
+                                    history += userMessage(results)
+                                    mark = history.size
+                                }
+                                throw t
+                            }
                             history += userMessage(results)
                             mark = history.size
                             acted = true
@@ -177,8 +195,15 @@ class AgentLoop(
                     } else {
                         // Server tools run inside the API call and never reach the approver. With nobody watching,
                         // text the run reads (an SMS, a notification) could ask it to fetch a URL that carries
-                        // private data away, so these runs get a few searches and no fetch.
-                        addTool(BetaWebSearchTool20260209.builder().maxUses(UNATTENDED_SEARCHES).build())
+                        // private data away, so these runs get a few searches and no fetch. The searches are called
+                        // directly (not from the code-execution sandbox) so the limit counts across the whole run,
+                        // not afresh on each request.
+                        addTool(
+                            BetaWebSearchTool20260209.builder()
+                                .maxUses(UNATTENDED_SEARCHES)
+                                .addAllowedCaller(BetaWebSearchTool20260209.AllowedCaller.DIRECT)
+                                .build()
+                        )
                     }
                 }
             }
@@ -248,8 +273,9 @@ class AgentLoop(
         }
     }
 
-    private suspend fun runTools(uses: List<BetaToolUseBlock>, emit: suspend (AgentEvent) -> Unit): List<BetaContentBlockParam> =
-        uses.map { use ->
+    /** Appends each call's result to [results] as it finishes, so the caller still has them if a later call is cancelled. */
+    private suspend fun runTools(uses: List<BetaToolUseBlock>, emit: suspend (AgentEvent) -> Unit, results: MutableList<BetaContentBlockParam>) {
+        for (use in uses) {
             val tool = byName[use.name()]
             val input: JsonNode = runCatching { use._input().convert(JsonNode::class.java) }.getOrNull() ?: mapper.createObjectNode()
             val (output, status) = if (tool == null) {
@@ -263,6 +289,9 @@ class AgentLoop(
                 val decision = decide(tool, summary)
                 if (decision == ApprovalDecision.DENY) {
                     ToolOutput.error(denial()) to ToolStatus.DENIED
+                } else if (!isEnabled(tool.group)) {
+                    // Switched off while the approval prompt was up.
+                    ToolOutput.error("${tool.group.label} was switched off in Settings. Tell the user; don't retry.") to ToolStatus.DENIED
                 } else {
                     if (decision == ApprovalDecision.FOR_TASK) allowedForTask += tool.name
                     val result = try {
@@ -276,8 +305,9 @@ class AgentLoop(
                 }
             }
             emit(AgentEvent.ToolResult(use.id(), status, output.text.take(400)))
-            BetaContentBlockParam.ofToolResult(toolResult(use.id(), output))
+            results += BetaContentBlockParam.ofToolResult(toolResult(use.id(), output))
         }
+    }
 
     private suspend fun decide(tool: AgentTool, summary: String): ApprovalDecision = when {
         tool.risk == Risk.READ -> ApprovalDecision.ONCE

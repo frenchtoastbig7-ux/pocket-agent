@@ -142,6 +142,13 @@ class BridgeServer(
                 }
                 ApprovalDecision.ONCE -> Unit
             }
+            // The capability may have been switched off while the prompt was waiting.
+            if (!isEnabled(tool.group)) {
+                return@withLock CallToolResult(
+                    content = listOf(TextContent("${tool.group.label} is switched off in Pocket Agent's settings on the phone.")),
+                    isError = true,
+                )
+            }
         }
 
         val output = try {

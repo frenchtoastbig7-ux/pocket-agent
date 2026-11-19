@@ -62,8 +62,21 @@ class AgentAccessibilityService : AccessibilityService() {
 
     private val blocked = ToolOutput.error("An approval prompt is on screen, so screen actions are paused. Try again once it has been answered.")
 
-    /** True while any approval prompt is up; nothing may tap, type or gesture then (it could land on Allow). */
-    private fun prompting(): Boolean = (application as PocketAgentApp).approvals.prompting
+    private val approvals get() = (application as PocketAgentApp).approvals
+
+    /**
+     * Runs a tap, typing or other action unless an approval prompt is requested or showing (it could land on Allow);
+     * returns null then. The broker counts the action as in flight until [block] returns, and holds a new prompt back
+     * until it has.
+     */
+    private inline fun <T : Any> unlessPrompting(block: () -> T): T? {
+        if (!approvals.beginScreenAction()) return null
+        try {
+            return block()
+        } finally {
+            approvals.endScreenAction()
+        }
+    }
 
     override fun onServiceConnected() {
         instance = this
@@ -103,8 +116,13 @@ class AgentAccessibilityService : AccessibilityService() {
         sb.append("App: ").append(root.packageName).append("   screen ")
             .append((b.width() * s).roundToInt()).append('x').append((b.height() * s).roundToInt()).append('\n')
         synchronized(nodes) {
-            firstId = if (firstId > 1_000_000) 0 else firstId + nodes.size
+            // Ids are never reused while the service lives. Running out takes billions of reads; say so rather than wrap.
+            val next = firstId.toLong() + nodes.size
             nodes.clear()
+            if (next + maxElements > Int.MAX_VALUE) {
+                return "Element ids are used up. Ask the user to turn Pocket Agent's screen control off and on again in Accessibility settings."
+            }
+            firstId = next.toInt()
             walk(root, 0, sb, maxElements, s)
             if (nodes.size >= maxElements) sb.append("[element limit reached; scroll or raise max_elements]\n")
         }
@@ -181,15 +199,19 @@ class AgentAccessibilityService : AccessibilityService() {
     private fun gone(id: Int) = ToolOutput.error("Element [$id] is gone or from an older read_screen. Call read_screen again.")
 
     suspend fun tapElement(id: Int, longPress: Boolean): ToolOutput {
-        if (prompting()) return blocked
         val target = node(id) ?: return gone(id)
-        var n: AccessibilityNodeInfo? = target
         val action = if (longPress) AccessibilityNodeInfo.ACTION_LONG_CLICK else AccessibilityNodeInfo.ACTION_CLICK
-        while (n != null) {
-            val can = if (longPress) n.isLongClickable else n.isClickable
-            if (can && n.performAction(action)) return ToolOutput("Tapped ${elementLabel(id)}.")
-            n = n.parent
-        }
+        val clicked = unlessPrompting {
+            var n: AccessibilityNodeInfo? = target
+            var done = false
+            while (n != null && !done) {
+                val can = if (longPress) n.isLongClickable else n.isClickable
+                done = can && n.performAction(action)
+                n = n.parent
+            }
+            done
+        } ?: return blocked
+        if (clicked) return ToolOutput("Tapped ${elementLabel(id)}.")
         val r = Rect().also(target::getBoundsInScreen)
         return if (gestureTap(r.exactCenterX(), r.exactCenterY(), longPress)) ToolOutput("Tapped the center of [$id].")
         else ToolOutput.error("Tap on [$id] failed.")
@@ -200,8 +222,9 @@ class AgentAccessibilityService : AccessibilityService() {
         return if (gestureTap(x / s, y / s, longPress)) ToolOutput("Tapped at $x,$y.") else ToolOutput.error("Tap at $x,$y failed.")
     }
 
-    fun setText(id: Int, text: String, submit: Boolean): ToolOutput {
-        if (prompting()) return blocked
+    fun setText(id: Int, text: String, submit: Boolean): ToolOutput = unlessPrompting { setTextNow(id, text, submit) } ?: blocked
+
+    private fun setTextNow(id: Int, text: String, submit: Boolean): ToolOutput {
         val n = node(id) ?: return gone(id)
         if (!n.isEditable) return ToolOutput.error("Element [$id] is not an editable field.")
         n.performAction(AccessibilityNodeInfo.ACTION_FOCUS)
@@ -238,14 +261,19 @@ class AgentAccessibilityService : AccessibilityService() {
     }
 
     suspend fun scroll(id: Int?, direction: String): ToolOutput {
-        if (prompting()) return blocked
         if (id != null) {
-            var n = node(id) ?: return gone(id)
-            while (true) {
-                val action = if (n.isScrollable) scrollAction(n, direction) else null
-                if (action != null && n.performAction(action)) return ToolOutput("Scrolled $direction in [$id].")
-                n = n.parent ?: break
-            }
+            val start = node(id) ?: return gone(id)
+            val scrolled = unlessPrompting {
+                var n: AccessibilityNodeInfo? = start
+                var done = false
+                while (n != null && !done) {
+                    val action = if (n.isScrollable) scrollAction(n, direction) else null
+                    done = action != null && n.performAction(action)
+                    n = n.parent
+                }
+                done
+            } ?: return blocked
+            if (scrolled) return ToolOutput("Scrolled $direction in [$id].")
         }
         val b = screenBounds()
         val cx = b.exactCenterX()
@@ -269,8 +297,9 @@ class AgentAccessibilityService : AccessibilityService() {
         return if (gesture(path, durationMs)) ToolOutput("Swiped.") else ToolOutput.error("Swipe failed.")
     }
 
-    fun global(action: String): ToolOutput {
-        if (prompting()) return blocked
+    fun global(action: String): ToolOutput = unlessPrompting { globalNow(action) } ?: blocked
+
+    private fun globalNow(action: String): ToolOutput {
         val code = when (action) {
             "back" -> GLOBAL_ACTION_BACK
             "home" -> GLOBAL_ACTION_HOME
@@ -287,23 +316,34 @@ class AgentAccessibilityService : AccessibilityService() {
 
     private suspend fun gesture(path: Path, durationMs: Long): Boolean = suspendCancellableCoroutine { cont ->
         // Every tap, swipe and scroll gesture from every entry point comes through here.
-        if (prompting()) {
+        // Counted as in flight until its callback: Android hit-tests a gesture when it is delivered, so the broker
+        // keeps a new prompt off the screen until then.
+        if (!approvals.beginScreenAction()) {
             cont.resume(false)
             return@suspendCancellableCoroutine
+        }
+        val landed = java.util.concurrent.atomic.AtomicBoolean(false)
+        fun land() {
+            if (landed.compareAndSet(false, true)) approvals.endScreenAction()
         }
         val g = GestureDescription.Builder()
             .addStroke(GestureDescription.StrokeDescription(path, 0, durationMs))
             .build()
         val accepted = dispatchGesture(g, object : GestureResultCallback() {
             override fun onCompleted(gestureDescription: GestureDescription?) {
+                land()
                 if (cont.isActive) cont.resume(true)
             }
 
             override fun onCancelled(gestureDescription: GestureDescription?) {
+                land()
                 if (cont.isActive) cont.resume(false)
             }
         }, main)
-        if (!accepted && cont.isActive) cont.resume(false)
+        if (!accepted) {
+            land()
+            if (cont.isActive) cont.resume(false)
+        }
     }
 
     // ---- Approval overlay ----------------------------------------------------------------------
@@ -339,8 +379,14 @@ class AgentAccessibilityService : AccessibilityService() {
             // The whole detail (the full text about to be typed, say) is reachable by scrolling; the box stops
             // growing at a fixed height so the buttons stay on screen.
             val detailBox = object : ScrollView(this) {
-                override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) =
-                    super.onMeasure(widthMeasureSpec, MeasureSpec.makeMeasureSpec(px(260), MeasureSpec.AT_MOST))
+                override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {
+                    // The card offers what is left below the title. Keep room for the button row out of that, so a
+                    // short (landscape) window still shows Allow and Deny.
+                    val offered = if (MeasureSpec.getMode(heightMeasureSpec) == MeasureSpec.UNSPECIFIED) px(260)
+                    else MeasureSpec.getSize(heightMeasureSpec) - px(72)
+                    val cap = offered.coerceIn(px(40), px(260))
+                    super.onMeasure(widthMeasureSpec, MeasureSpec.makeMeasureSpec(cap, MeasureSpec.AT_MOST))
+                }
             }
             detailBox.addView(TextView(this).apply {
                 text = detail

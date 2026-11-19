@@ -89,15 +89,31 @@ class SessionStore(context: Context) : SQLiteOpenHelper(context, "sessions.db", 
         readableDatabase.rawQuery("SELECT role, text, created_at FROM turns WHERE CAST(session_id AS INTEGER) = ? ORDER BY CAST(created_at AS INTEGER)", arrayOf(sessionId.toString()))
             .use { c -> buildList { while (c.moveToNext()) add(Turn(c.getString(0), c.getString(1), c.getLong(2))) } }
 
+    /** One transaction, so [addTurn] either lands before the delete (and is removed) or finds the session gone. */
     fun delete(sessionId: Long) {
-        // The FTS column has no type, so the stored integer must be cast before it can equal a bound argument.
-        writableDatabase.delete("turns", "CAST(session_id AS INTEGER) = ?", arrayOf(sessionId.toString()))
-        writableDatabase.delete("sessions", "id = ?", arrayOf(sessionId.toString()))
+        val db = writableDatabase
+        db.beginTransaction()
+        try {
+            // The FTS column has no type, so the stored integer must be cast before it can equal a bound argument.
+            db.delete("turns", "CAST(session_id AS INTEGER) = ?", arrayOf(sessionId.toString()))
+            db.delete("sessions", "id = ?", arrayOf(sessionId.toString()))
+            db.setTransactionSuccessful()
+        } finally {
+            db.endTransaction()
+        }
     }
 
     fun deleteAll() {
-        writableDatabase.execSQL("DELETE FROM turns")
-        writableDatabase.execSQL("DELETE FROM sessions")
-        writableDatabase.execSQL("VACUUM")
+        val db = writableDatabase
+        db.beginTransaction()
+        try {
+            db.execSQL("DELETE FROM turns")
+            db.execSQL("DELETE FROM sessions")
+            db.setTransactionSuccessful()
+        } finally {
+            db.endTransaction()
+        }
+        // Not allowed inside a transaction.
+        db.execSQL("VACUUM")
     }
 }

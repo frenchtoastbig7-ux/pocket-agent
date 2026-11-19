@@ -41,6 +41,7 @@ class SkillStore(context: Context) {
         return skills.joinToString("\n") { "- ${it.name}: ${it.description}" }
     }
 
+    @Synchronized
     fun clear() {
         dir.deleteRecursively()
         dir.mkdirs()

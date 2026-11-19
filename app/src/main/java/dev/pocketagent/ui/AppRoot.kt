@@ -15,6 +15,8 @@ import androidx.compose.material3.dynamicLightColorScheme
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.MutableState
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.key
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.saveable.rememberSaveable
@@ -59,14 +61,18 @@ fun AppRoot(app: PocketAgentApp, voice: Voice, assistLaunch: MutableState<Boolea
             },
         ) { padding ->
             // Each tab keeps its saveable state (a half-typed message, say) while another tab is showing.
-            val tabState = rememberSaveableStateHolder()
-            Box(Modifier.padding(padding)) {
-                tabState.SaveableStateProvider(tab.name) {
-                    when (tab) {
-                        Tab.CHAT -> ChatScreen(app, voice, assistLaunch)
-                        Tab.AUTOMATIONS -> AutomationsScreen(app)
-                        Tab.MEMORY -> MemoryScreen(app)
-                        Tab.SETTINGS -> SettingsScreen(app, voice, onSecureWindowChanged)
+            // A wipe starts a new holder: a draft typed before it is wiped data too.
+            val wipes by app.wipes.collectAsState()
+            key(wipes) {
+                val tabState = rememberSaveableStateHolder()
+                Box(Modifier.padding(padding)) {
+                    tabState.SaveableStateProvider(tab.name) {
+                        when (tab) {
+                            Tab.CHAT -> ChatScreen(app, voice, assistLaunch)
+                            Tab.AUTOMATIONS -> AutomationsScreen(app)
+                            Tab.MEMORY -> MemoryScreen(app)
+                            Tab.SETTINGS -> SettingsScreen(app, voice, onSecureWindowChanged)
+                        }
                     }
                 }
             }
