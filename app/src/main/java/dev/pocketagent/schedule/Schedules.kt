@@ -171,13 +171,16 @@ class Scheduler(private val context: Context, private val store: ScheduleStore) 
             else -> ScheduleSpec.nextAfter(task.spec, ZonedDateTime.now())?.toInstant()?.toEpochMilli()
         }
         val updated = task.copy(nextRunAt = next)
-        store.put(updated)
-        val at = updated.nextRunAt ?: return updated
-        if (alarms.canScheduleExactAlarms()) {
-            alarms.setExactAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, at, pendingIntent(task.id))
-        } else {
-            alarms.setAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, at, pendingIntent(task.id))
+        // The alarm is set even if saving fails, so a storage error can't leave a recurring task with no next run.
+        val saved = runCatching { store.put(updated) }
+        updated.nextRunAt?.let { at ->
+            if (alarms.canScheduleExactAlarms()) {
+                alarms.setExactAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, at, pendingIntent(task.id))
+            } else {
+                alarms.setAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, at, pendingIntent(task.id))
+            }
         }
+        saved.getOrThrow()
         return updated
     }
 

@@ -6,6 +6,7 @@ import android.content.Intent
 import android.content.pm.ServiceInfo
 import dev.pocketagent.PocketAgentApp
 import dev.pocketagent.agent.RunMode
+import dev.pocketagent.schedule.ScheduledTask
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CoroutineStart
@@ -56,9 +57,12 @@ class AgentRunService : Service() {
         // Nothing is saved once "Wipe all agent data" has run: every write below goes through ifCurrent.
         val epoch = app.dataEpoch
         val job = scope.launch(start = CoroutineStart.LAZY) {
-            // The next run is armed before this one starts, so the schedule doesn't depend on this run finishing.
-            val task = withContext(Dispatchers.IO) { app.scheduler.advance(taskId) } ?: return@launch
+            // Set inside the try: a failure or a Stop while the next run is being armed is reported like any other.
+            var armed: ScheduledTask? = null
             val report = try {
+                // The next run is armed before this one starts, so the schedule doesn't depend on this run finishing.
+                val task = withContext(Dispatchers.IO) { app.scheduler.advance(taskId) } ?: return@launch
+                armed = task
                 val client = app.factory.client() ?: error("No API key is configured.")
                 val loop = app.factory.newLoop(client, RunMode.UNATTENDED, approver = null) { null }
                 val sessionId = withContext(Dispatchers.IO) {
@@ -78,6 +82,7 @@ class AgentRunService : Service() {
             withContext(NonCancellable + Dispatchers.IO) {
                 // Both under the wipe's lock: a wipe either comes first (nothing is shown) or clears the report after.
                 app.ifCurrent(epoch) {
+                    val task = armed ?: runCatching { app.schedules.get(taskId) }.getOrNull() ?: return@ifCurrent
                     runCatching { app.scheduler.recordResult(taskId, System.currentTimeMillis(), report.take(1000)) }
                     runCatching { Notifications.automationResult(this@AgentRunService, task.id, task.title, report) }
                 }
