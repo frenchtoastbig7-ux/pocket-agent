@@ -316,6 +316,13 @@ class AgentAccessibilityService : AccessibilityService() {
 
     private suspend fun gesture(path: Path, durationMs: Long): Boolean = suspendCancellableCoroutine { cont ->
         // Every tap, swipe and scroll gesture from every entry point comes through here.
+        // Built first: Android rejects some paths (a negative coordinate, say), and that must not leave an action counted.
+        val g = runCatching {
+            GestureDescription.Builder().addStroke(GestureDescription.StrokeDescription(path, 0, durationMs)).build()
+        }.getOrElse {
+            cont.resume(false)
+            return@suspendCancellableCoroutine
+        }
         // Counted as in flight until its callback: Android hit-tests a gesture when it is delivered, so the broker
         // keeps a new prompt off the screen until then.
         if (!approvals.beginScreenAction()) {
@@ -326,10 +333,7 @@ class AgentAccessibilityService : AccessibilityService() {
         fun land() {
             if (landed.compareAndSet(false, true)) approvals.endScreenAction()
         }
-        val g = GestureDescription.Builder()
-            .addStroke(GestureDescription.StrokeDescription(path, 0, durationMs))
-            .build()
-        val accepted = dispatchGesture(g, object : GestureResultCallback() {
+        val callback = object : GestureResultCallback() {
             override fun onCompleted(gestureDescription: GestureDescription?) {
                 land()
                 if (cont.isActive) cont.resume(true)
@@ -339,7 +343,8 @@ class AgentAccessibilityService : AccessibilityService() {
                 land()
                 if (cont.isActive) cont.resume(false)
             }
-        }, main)
+        }
+        val accepted = runCatching { dispatchGesture(g, callback, main) }.getOrDefault(false)
         if (!accepted) {
             land()
             if (cont.isActive) cont.resume(false)

@@ -77,6 +77,9 @@ class AgentFactory(private val app: PocketAgentApp) {
     }
 
     /** The phone tools shared by the in-app chat and the bridge. */
+    /** For tools that write the app's own data: refused after a wipe that happens once these tools exist. */
+    private fun guarded(tool: AgentTool, epoch: Int = app.dataEpoch): AgentTool = WipeGuarded(tool) { call -> app.ifCurrent(epoch, call) }
+
     private fun phoneTools(s: dev.pocketagent.Settings): List<AgentTool> = buildList {
         if (s.isEnabled(ToolGroup.PERSONAL)) addAll(
             listOf(
@@ -84,7 +87,7 @@ class AgentFactory(private val app: PocketAgentApp) {
                 CreateCalendarEventTool(app), ListCallLogTool(app), ListNotificationsTool(app),
             )
         )
-        if (s.isEnabled(ToolGroup.FILES)) addAll(listOf(ListFilesTool(app.workspace), ReadFileTool(app.workspace), WriteFileTool(app.workspace)))
+        if (s.isEnabled(ToolGroup.FILES)) addAll(listOf(ListFilesTool(app.workspace), ReadFileTool(app.workspace), guarded(WriteFileTool(app.workspace))))
         if (s.isEnabled(ToolGroup.DEVICE)) addAll(listOf(DeviceStatusTool(app), ListAppsTool(app), OpenAppTool(app)))
     }
 
@@ -97,9 +100,9 @@ class AgentFactory(private val app: PocketAgentApp) {
             addAll(phoneTools(s))
             if (s.isEnabled(ToolGroup.SCREEN) && mode == RunMode.INTERACTIVE) addAll(screenTools())
             if (s.isEnabled(ToolGroup.MEMORY)) addAll(
-                listOf(MemoryTool(app.memory), SkillViewTool(app.skills), SkillManageTool(app.skills), SessionSearchTool(app.sessions, currentSession))
+                listOf(guarded(MemoryTool(app.memory)), SkillViewTool(app.skills), guarded(SkillManageTool(app.skills)), SessionSearchTool(app.sessions, currentSession))
             )
-            if (s.isEnabled(ToolGroup.AUTOMATION)) addAll(listOf(ListSchedulesTool(app.schedules), ManageScheduleTool(app.schedules, app.scheduler)))
+            if (s.isEnabled(ToolGroup.AUTOMATION)) addAll(listOf(ListSchedulesTool(app.schedules), guarded(ManageScheduleTool(app.schedules, app.scheduler))))
             if (s.isEnabled(ToolGroup.SUBAGENTS) && mode == RunMode.INTERACTIVE) add(DelegateTasksTool(this@AgentFactory))
         }
         // Unattended and sub-agent runs only get tools that can't change anything.

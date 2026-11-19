@@ -60,6 +60,25 @@ abstract class AgentTool(
     abstract suspend fun run(input: JsonNode): ToolOutput
 }
 
+/**
+ * Wraps a tool that writes to the app's own storage (memory, skills, automations, workspace files). The write is
+ * refused once "Wipe all agent data" has run, and one already under way finishes before the wipe deletes it.
+ * [guard] runs the call under the wipe's lock, or returns null when the data has been wiped since the tool was built.
+ */
+class WipeGuarded(private val inner: AgentTool, private val guard: (() -> ToolOutput) -> ToolOutput?) :
+    AgentTool(inner.name, inner.description, inner.group, inner.risk) {
+    override val alwaysConfirm get() = inner.alwaysConfirm
+    override val properties get() = inner.properties
+    override val required get() = inner.required
+    override fun summarize(input: JsonNode) = inner.summarize(input)
+
+    override suspend fun run(input: JsonNode): ToolOutput = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+        // These tools only do short local writes, so holding the lock for the call is fine.
+        guard { kotlinx.coroutines.runBlocking { inner.run(input) } }
+            ?: ToolOutput.error("Not saved: the app's data was wiped. Tell the user; don't retry.")
+    }
+}
+
 object Schema {
     fun str(description: String, enum: List<String>? = null): Map<String, Any> = buildMap {
         put("type", "string")
