@@ -75,6 +75,7 @@ class ChatController(private val app: PocketAgentApp) {
         // A key saved since the last turn takes effect without losing the chat.
         loop.client = client
         val startedIn = epoch
+        val dataEpoch = app.dataEpoch
         val knownSession = sessionId
         add(ChatItem.Kind.USER, message)
         currentAssistant = null
@@ -86,13 +87,16 @@ class ChatController(private val app: PocketAgentApp) {
             fun current() = startedIn == epoch
             try {
                 val sid = withContext(Dispatchers.IO) {
-                    // The stored session may have been deleted on the Memory screen since the last turn.
-                    (knownSession?.takeIf { app.sessions.exists(it) } ?: app.sessions.create("chat", message.take(60)))
-                        .also { app.sessions.addTurn(it, "user", message) }
+                    // Nothing is saved once "Wipe all agent data" has run, even if this block was already under way.
+                    app.ifCurrent(dataEpoch) {
+                        // The stored session may have been deleted on the Memory screen since the last turn.
+                        (knownSession?.takeIf { app.sessions.exists(it) } ?: app.sessions.create("chat", message.take(60)))
+                            .also { app.sessions.addTurn(it, "user", message) }
+                    } ?: throw CancellationException("Data was wiped.")
                 }
                 if (current()) sessionId = sid
                 val reply = loop.send(message) { event -> withContext(Dispatchers.Main) { if (current()) handle(event) } }
-                withContext(Dispatchers.IO) { app.sessions.addTurn(sid, "assistant", reply) }
+                withContext(Dispatchers.IO) { app.ifCurrent(dataEpoch) { app.sessions.addTurn(sid, "assistant", reply) } }
                 if (current() && reply.isNotBlank()) finishedReplies.tryEmit(reply)
             } catch (_: CancellationException) {
                 if (current()) add(ChatItem.Kind.NOTICE, "Stopped.")

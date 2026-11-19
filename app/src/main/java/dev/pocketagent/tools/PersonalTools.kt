@@ -251,7 +251,10 @@ class CreateCalendarEventTool(private val ctx: Context) : AgentTool(
         val allDay = input.bool("all_day")
         // A given end that can't be read is an error, not a silent default.
         val givenEnd = input.str("end")?.let { Times.parse(it, zone) ?: return@withContext ToolOutput.error("Could not parse 'end'.") }
-        if (givenEnd != null && (givenEnd.isBefore(start))) {
+        // An all-day event is compared by date: an end on the start's own day is a one-day event.
+        val endsFirst = givenEnd != null &&
+            if (allDay) givenEnd.toLocalDate().isBefore(start.toLocalDate()) else givenEnd.isBefore(start)
+        if (endsFirst) {
             return@withContext ToolOutput.error("'end' is before 'start'.")
         }
         val values = ContentValues().apply {

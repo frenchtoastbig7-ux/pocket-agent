@@ -155,7 +155,7 @@ private fun SettingsContent(app: PocketAgentApp, voice: Voice, onSecureWindowCha
             modifier = Modifier.fillMaxWidth(),
             minLines = 3,
         )
-        Text("Model, effort and instructions apply from the next new chat. A new key and capability switches apply right away.", style = MaterialTheme.typography.bodySmall)
+        Text("Model, effort and instructions apply from the next new chat. A new key applies right away, and so does switching a capability off; one switched on is available from the next new chat.", style = MaterialTheme.typography.bodySmall)
 
         Heading("Capabilities")
         ToolGroup.entries.forEach { group ->

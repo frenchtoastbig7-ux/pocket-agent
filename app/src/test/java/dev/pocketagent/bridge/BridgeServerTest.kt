@@ -23,9 +23,8 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
-import java.net.HttpURLConnection
 import java.net.ServerSocket
-import java.net.URL
+import java.net.Socket
 
 /** Runs the real bridge server on loopback and talks to it with the MCP Kotlin client. */
 class BridgeServerTest {
@@ -74,18 +73,25 @@ class BridgeServerTest {
     @After
     fun stop() = server.stop()
 
-    private fun rawStatus(authorization: String?, host: String? = null, body: String = """{"jsonrpc":"2.0","id":1,"method":"ping"}"""): Int {
-        if (host != null) System.setProperty("sun.net.http.allowRestrictedHeaders", "true")
-        val conn = URL("http://127.0.0.1:$port/mcp").openConnection() as HttpURLConnection
-        conn.requestMethod = "POST"
-        conn.setRequestProperty("Content-Type", "application/json")
-        conn.setRequestProperty("Accept", "application/json, text/event-stream")
-        authorization?.let { conn.setRequestProperty("Authorization", it) }
-        host?.let { conn.setRequestProperty("Host", it) }
-        conn.doOutput = true
-        conn.outputStream.use { it.write(body.toByteArray()) }
-        return conn.responseCode.also { conn.disconnect() }
-    }
+    /** A hand-written request over a socket, so the Host header is exactly what the test says (the JDK client rewrites it). */
+    private fun rawStatus(authorization: String?, host: String = "127.0.0.1:$port", body: String = """{"jsonrpc":"2.0","id":1,"method":"ping"}"""): Int =
+        Socket("127.0.0.1", port).use { socket ->
+            socket.soTimeout = 10_000
+            val bytes = body.toByteArray()
+            val head = buildString {
+                append("POST /mcp HTTP/1.1\r\nHost: $host\r\nContent-Type: application/json\r\n")
+                append("Accept: application/json, text/event-stream\r\nContent-Length: ${bytes.size}\r\nConnection: close\r\n")
+                authorization?.let { append("Authorization: $it\r\n") }
+                append("\r\n")
+            }
+            socket.getOutputStream().apply {
+                write(head.toByteArray())
+                write(bytes)
+                flush()
+            }
+            // Status line: "HTTP/1.1 200 OK".
+            socket.getInputStream().bufferedReader().readLine().split(' ')[1].toInt()
+        }
 
     @Test
     fun rejectsMissingOrWrongToken() {

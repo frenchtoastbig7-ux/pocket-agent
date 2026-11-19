@@ -93,17 +93,25 @@ class Voice(private val context: Context) {
         val engine = tts
         if (engine == null) {
             queued = text
-            tts = TextToSpeech(context) { status ->
+            // The engine may report its result before the constructor returns, so the result is handled only once
+            // the new engine has been stored.
+            var created: TextToSpeech? = null
+            var early: Int? = null
+            fun finish(made: TextToSpeech, status: Int) {
                 ttsReady = status == TextToSpeech.SUCCESS
                 if (ttsReady) {
                     queued?.let(::say)
                 } else {
                     // Let go of the failed engine so the next reply tries again (one may have been installed since).
-                    tts?.shutdown()
-                    tts = null
+                    made.shutdown()
+                    if (tts === made) tts = null
                 }
                 queued = null
             }
+            val made = TextToSpeech(context) { status -> created?.let { finish(it, status) } ?: run { early = status } }
+            created = made
+            tts = made
+            early?.let { finish(made, it) }
         } else if (ttsReady) {
             say(text)
         }

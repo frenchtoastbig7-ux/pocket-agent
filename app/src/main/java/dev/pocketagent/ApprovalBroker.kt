@@ -44,6 +44,27 @@ class ApprovalBroker(private val context: Context) {
 
     private val oneAtATime = Mutex()
 
+    /** Guards [prompting] together with the count of screen actions that are still on their way to the screen. */
+    private val gate = Any()
+    private var actionsInFlight = 0
+    private var actionsIdle: CompletableDeferred<Unit>? = null
+
+    /**
+     * Every tap, typing or gesture calls this first and [endScreenAction] once it has landed. Returns false while a
+     * prompt is requested or showing. The check and the count change together, so an action can't slip in between a
+     * prompt being requested and it appearing.
+     */
+    fun beginScreenAction(): Boolean = synchronized(gate) {
+        if (prompting) false else {
+            actionsInFlight++
+            true
+        }
+    }
+
+    fun endScreenAction() {
+        synchronized(gate) { if (--actionsInFlight <= 0) actionsIdle.also { actionsIdle = null } else null }?.complete(Unit)
+    }
+
     /** Called on the main thread as MainActivity resumes and pauses. */
     fun setUiVisible(visible: Boolean) {
         uiVisible = visible
@@ -57,7 +78,13 @@ class ApprovalBroker(private val context: Context) {
             val decision = CompletableDeferred<ApprovalDecision>()
             // The try covers the setup too: a cancellation while returning from Main must still take the prompt down.
             try {
-                prompting = true
+                val idle = synchronized(gate) {
+                    prompting = true
+                    if (actionsInFlight > 0) CompletableDeferred<Unit>().also { actionsIdle = it } else null
+                }
+                // A gesture accepted just before this point is hit-tested when it is delivered. The prompt waits for
+                // it to land, so it can't arrive on the Allow button.
+                idle?.let { withTimeoutOrNull(IN_FLIGHT_WAIT_MS) { it.await() } }
                 withContext(Dispatchers.Main) {
                     val overlay = AgentAccessibilityService.instance
                     if (!uiVisible && overlay != null) {
@@ -74,7 +101,7 @@ class ApprovalBroker(private val context: Context) {
                     pending.value = null
                     AgentAccessibilityService.instance?.dismissApproval()
                     Notifications.clearApproval(context)
-                    prompting = false
+                    synchronized(gate) { prompting = false }
                 }
             }
         }
@@ -82,5 +109,10 @@ class ApprovalBroker(private val context: Context) {
     /** Answers [approval], the prompt the dialog is showing. A tap that arrives after it was replaced is ignored. */
     fun resolve(approval: PendingApproval, decision: ApprovalDecision) {
         if (pending.value === approval) approval.decision.complete(decision)
+    }
+
+    private companion object {
+        /** Longer than any gesture the screen tools dispatch; a lost gesture callback must not hold a prompt forever. */
+        const val IN_FLIGHT_WAIT_MS = 15_000L
     }
 }

@@ -207,8 +207,12 @@ class Scheduler(private val context: Context, private val store: ScheduleStore) 
     @Synchronized
     fun rearmAll() = store.all().forEach { arm(it, keepFutureRun = true) }
 
+    /** Cancels every alarm and deletes every task under the lock [advance] and [modify] use, so neither can re-arm one. */
     @Synchronized
-    fun cancelAll() = store.all().forEach { alarms.cancel(pendingIntent(it.id)) }
+    fun wipe() {
+        store.all().forEach { alarms.cancel(pendingIntent(it.id)) }
+        store.clear()
+    }
 
     private fun pendingIntent(id: String): PendingIntent = PendingIntent.getBroadcast(
         context,

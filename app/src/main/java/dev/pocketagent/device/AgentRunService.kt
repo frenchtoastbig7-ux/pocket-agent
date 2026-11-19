@@ -48,10 +48,13 @@ class AgentRunService : Service() {
     }
 
     private fun runScheduled(app: PocketAgentApp, taskId: String) {
-        if (scheduledJobs.containsKey(taskId)) return
+        if (scheduledJobs.containsKey(taskId)) {
+            // No second run on top of the one still going, but the alarm was one-shot: arm the next occurrence.
+            scope.launch(Dispatchers.IO) { runCatching { app.scheduler.advance(taskId) } }
+            return
+        }
+        // Nothing is saved once "Wipe all agent data" has run: every write below goes through ifCurrent.
         val epoch = app.dataEpoch
-        // Nothing is saved once "Wipe all agent data" has run.
-        fun wiped() = app.dataEpoch != epoch
         val job = scope.launch(start = CoroutineStart.LAZY) {
             // The next run is armed before this one starts, so the schedule doesn't depend on this run finishing.
             val task = withContext(Dispatchers.IO) { app.scheduler.advance(taskId) } ?: return@launch
@@ -59,11 +62,12 @@ class AgentRunService : Service() {
                 val client = app.factory.client() ?: error("No API key is configured.")
                 val loop = app.factory.newLoop(client, RunMode.UNATTENDED, approver = null) { null }
                 val sessionId = withContext(Dispatchers.IO) {
-                    if (wiped()) throw CancellationException("Data was wiped.")
-                    app.sessions.create("automation", task.title).also { app.sessions.addTurn(it, "user", task.prompt) }
+                    app.ifCurrent(epoch) {
+                        app.sessions.create("automation", task.title).also { app.sessions.addTurn(it, "user", task.prompt) }
+                    } ?: throw CancellationException("Data was wiped.")
                 }
                 val reply = loop.send("Automation \"${task.title}\" is running now.\n\n${task.prompt}") {}
-                if (!wiped()) withContext(Dispatchers.IO) { app.sessions.addTurn(sessionId, "assistant", reply) }
+                withContext(Dispatchers.IO) { app.ifCurrent(epoch) { app.sessions.addTurn(sessionId, "assistant", reply) } }
                 reply.ifBlank { "(The automation produced no report.)" }
             } catch (_: CancellationException) {
                 "Stopped."
@@ -71,12 +75,12 @@ class AgentRunService : Service() {
                 "Failed: ${e.message ?: e.javaClass.simpleName}"
             }
             // Stop cancels this job; the result is still recorded and shown.
-            withContext(NonCancellable) {
-                if (wiped()) return@withContext
-                withContext(Dispatchers.IO) {
+            withContext(NonCancellable + Dispatchers.IO) {
+                // Both under the wipe's lock: a wipe either comes first (nothing is shown) or clears the report after.
+                app.ifCurrent(epoch) {
                     runCatching { app.scheduler.recordResult(taskId, System.currentTimeMillis(), report.take(1000)) }
+                    runCatching { Notifications.automationResult(this@AgentRunService, task.id, task.title, report) }
                 }
-                runCatching { Notifications.automationResult(this@AgentRunService, task.id, task.title, report) }
             }
         }
         scheduledJobs[taskId] = job

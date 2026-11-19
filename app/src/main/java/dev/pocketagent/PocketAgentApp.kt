@@ -27,10 +27,23 @@ class PocketAgentApp : Application() {
     lateinit var factory: AgentFactory
     lateinit var controller: ChatController
 
-    /** Bumped by [wipeEverything]. A run that started before a wipe checks it and writes nothing afterwards. */
+    /** Bumped by [wipeEverything]. A run that started before a wipe saves through [ifCurrent] and so writes nothing afterwards. */
     @Volatile
     var dataEpoch = 0
         private set
+
+    /** Counts wipes for the UI, which drops its saved screen state (a half-typed message, say) when it changes. */
+    val wipes = kotlinx.coroutines.flow.MutableStateFlow(0)
+
+    private val dataLock = Any()
+
+    /**
+     * Runs [block] unless a wipe has happened since [epoch] was read; returns null then. The wipe holds the same lock,
+     * so a write that started before it finishes first and is deleted, and one that comes after it never happens.
+     */
+    fun <T : Any> ifCurrent(epoch: Int, block: () -> T): T? = synchronized(dataLock) {
+        if (dataEpoch != epoch) null else block()
+    }
 
     override fun onCreate() {
         super.onCreate()
@@ -52,21 +65,23 @@ class PocketAgentApp : Application() {
 
     /** Removes everything: API key, bridge token, settings, memory, skills, chat history, automations, workspace. */
     fun wipeEverything() {
-        dataEpoch++
         BridgeService.stop(this)
         controller.newChat()
-        // Stops running automations too; they also check dataEpoch before saving anything.
+        // Stops running automations too; whatever they still try to save goes through ifCurrent and is refused.
         runCatching { startService(Intent(this, AgentRunService::class.java).setAction(AgentRunService.ACTION_STOP)) }
-        scheduler.cancelAll()
-        schedules.clear()
-        memory.clear()
-        skills.clear()
-        sessions.deleteAll()
-        workspace.root.listFiles()?.forEach { it.deleteRecursively() }
-        factory.forgetClient()
-        secrets.wipe()
-        settings.clear()
-        // Automation reports and approval prompts already in the notification shade are copies of wiped data.
-        getSystemService(NotificationManager::class.java).cancelAll()
+        synchronized(dataLock) {
+            dataEpoch++
+            scheduler.wipe()
+            memory.clear()
+            skills.clear()
+            sessions.deleteAll()
+            workspace.root.listFiles()?.forEach { it.deleteRecursively() }
+            factory.forgetClient()
+            secrets.wipe()
+            settings.clear()
+            // Automation reports and approval prompts already in the notification shade are copies of wiped data.
+            getSystemService(NotificationManager::class.java).cancelAll()
+        }
+        wipes.value++
     }
 }

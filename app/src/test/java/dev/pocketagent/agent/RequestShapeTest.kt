@@ -77,7 +77,10 @@ class RequestShapeTest {
             val tools = body(loop(webTools = true, mode = mode))["tools"]
             val types = tools.map { it["type"]?.asText() }
             assertTrue(types.toString(), types.contains("web_search_20260209") && !types.contains("web_fetch_20260209"))
-            assertEquals(5, tools.first { it["type"]?.asText() == "web_search_20260209" }["max_uses"].asInt())
+            val search = tools.first { it["type"]?.asText() == "web_search_20260209" }
+            assertEquals(5, search["max_uses"].asInt())
+            // Direct calls only, so the five count across the whole run.
+            assertEquals(listOf("direct"), search["allowed_callers"].map { it.asText() })
         }
     }
 
