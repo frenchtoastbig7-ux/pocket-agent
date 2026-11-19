@@ -115,11 +115,21 @@ class ScheduleStore(context: Context) {
     fun all(): List<ScheduledTask> {
         if (!file.exists()) return emptyList()
         val array = runCatching { JSONArray(file.readText()) }.getOrElse { return emptyList() }
-        return (0 until array.length()).map { ScheduledTask.fromJson(array.getJSONObject(it)) }
+        return tasks(array)
     }
 
     @Synchronized
     fun get(id: String): ScheduledTask? = all().firstOrNull { it.id == id }
+
+    /** [get], except that a file which can't be read throws instead of looking like a file without the task. */
+    @Synchronized
+    fun getOrThrow(id: String): ScheduledTask? {
+        if (!file.exists()) return null
+        return tasks(JSONArray(file.readText())).firstOrNull { it.id == id }
+    }
+
+    private fun tasks(array: JSONArray): List<ScheduledTask> =
+        (0 until array.length()).map { ScheduledTask.fromJson(array.getJSONObject(it)) }
 
     @Synchronized
     fun put(task: ScheduledTask) = write(all().filterNot { it.id == task.id } + task)
@@ -182,9 +192,10 @@ class Scheduler(private val context: Context, private val store: ScheduleStore) 
         }
         if (saved.isFailure) {
             // That fallback is only for a task that is stored and active. A failed create or a failed resume must not
-            // leave an alarm that would start a task the file says is absent or paused.
-            val stored = runCatching { store.get(task.id) }.getOrNull()
-            if (stored == null || stored.paused) alarms.cancel(pendingIntent(task.id))
+            // leave an alarm that would start a task the file says is absent or paused. A file that can't be read
+            // says neither, so the alarm stays: it starts nothing unless the task is readable again when it fires.
+            val stored = runCatching { store.getOrThrow(task.id) }
+            if (stored.isSuccess && stored.getOrNull()?.paused != false) alarms.cancel(pendingIntent(task.id))
         }
         saved.getOrThrow()
         return updated
