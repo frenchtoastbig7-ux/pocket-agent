@@ -225,7 +225,7 @@ class CreateCalendarEventTool(private val ctx: Context) : AgentTool(
     override val properties = mapOf(
         "title" to Schema.str("Event title"),
         "start" to Schema.str("ISO-8601 start date-time (or date for all-day events), in the user's local time unless an offset is given"),
-        "end" to Schema.str("ISO-8601 end. Default: one hour after start"),
+        "end" to Schema.str("ISO-8601 end. Default: one hour after start. For all-day events, the date the event ends on (exclusive): a three-day event from 2026-12-01 ends 2026-12-04"),
         "all_day" to Schema.bool("True for an all-day event"),
         "location" to Schema.str("Location"),
         "description" to Schema.str("Notes"),
@@ -249,6 +249,11 @@ class CreateCalendarEventTool(private val ctx: Context) : AgentTool(
         val zone = ZoneId.systemDefault()
         val start = input.str("start")?.let { Times.parse(it, zone) } ?: return@withContext ToolOutput.error("Could not parse 'start'.")
         val allDay = input.bool("all_day")
+        // A given end that can't be read is an error, not a silent default.
+        val givenEnd = input.str("end")?.let { Times.parse(it, zone) ?: return@withContext ToolOutput.error("Could not parse 'end'.") }
+        if (givenEnd != null && (givenEnd.isBefore(start))) {
+            return@withContext ToolOutput.error("'end' is before 'start'.")
+        }
         val values = ContentValues().apply {
             put(CalendarContract.Events.CALENDAR_ID, calendarId)
             put(CalendarContract.Events.TITLE, input.str("title"))
@@ -257,11 +262,14 @@ class CreateCalendarEventTool(private val ctx: Context) : AgentTool(
             if (allDay) {
                 val day = start.toLocalDate().atStartOfDay(ZoneOffset.UTC)
                 put(CalendarContract.Events.DTSTART, day.toInstant().toEpochMilli())
-                put(CalendarContract.Events.DTEND, day.plusDays(1).toInstant().toEpochMilli())
+                // DTEND is the midnight that ends the event. A later end date is taken as that boundary; no end, or the
+                // start date again, means one day.
+                val lastMidnight = givenEnd?.toLocalDate()?.atStartOfDay(ZoneOffset.UTC)?.takeIf { it.isAfter(day) } ?: day.plusDays(1)
+                put(CalendarContract.Events.DTEND, lastMidnight.toInstant().toEpochMilli())
                 put(CalendarContract.Events.EVENT_TIMEZONE, "UTC")
                 put(CalendarContract.Events.ALL_DAY, 1)
             } else {
-                val end = input.str("end")?.let { Times.parse(it, zone) } ?: start.plusHours(1)
+                val end = givenEnd ?: start.plusHours(1)
                 put(CalendarContract.Events.DTSTART, start.toInstant().toEpochMilli())
                 put(CalendarContract.Events.DTEND, end.toInstant().toEpochMilli())
                 put(CalendarContract.Events.EVENT_TIMEZONE, zone.id)

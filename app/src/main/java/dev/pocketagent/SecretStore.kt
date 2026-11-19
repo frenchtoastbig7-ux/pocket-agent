@@ -3,7 +3,6 @@ package dev.pocketagent
 import android.content.Context
 import android.security.keystore.KeyGenParameterSpec
 import android.security.keystore.KeyProperties
-import android.security.keystore.StrongBoxUnavailableException
 import android.util.Base64
 import java.security.KeyStore
 import java.security.SecureRandom
@@ -20,24 +19,30 @@ import javax.crypto.spec.GCMParameterSpec
 class SecretStore(context: Context) {
     private val prefs = context.getSharedPreferences("secrets", Context.MODE_PRIVATE)
 
+    /**
+     * Every read, write and key creation holds this: two first uses on different threads must not each create a
+     * wrapping key (the second would orphan the first's ciphertext) or each mint a different bridge token.
+     */
+    private val lock = Any()
+
     fun hasApiKey(): Boolean = prefs.contains(API_KEY)
-    fun putApiKey(value: String) = put(API_KEY, value.trim())
-    fun apiKey(): String? = get(API_KEY)
+    fun putApiKey(value: String) = synchronized(lock) { put(API_KEY, value.trim()) }
+    fun apiKey(): String? = synchronized(lock) { get(API_KEY) }
     fun clearApiKey() = prefs.edit().remove(API_KEY).apply()
 
     /** The bridge bearer token, created on first use. */
-    fun bridgeToken(): String = get(BRIDGE_TOKEN) ?: rotateBridgeToken()
+    fun bridgeToken(): String = synchronized(lock) { get(BRIDGE_TOKEN) ?: rotateBridgeToken() }
 
     /** Replaces the bridge token; Claude Code must be reconfigured with the new one. */
-    fun rotateBridgeToken(): String {
+    fun rotateBridgeToken(): String = synchronized(lock) {
         val bytes = ByteArray(32).also { SecureRandom().nextBytes(it) }
         val token = Base64.encodeToString(bytes, Base64.URL_SAFE or Base64.NO_WRAP or Base64.NO_PADDING)
         put(BRIDGE_TOKEN, token)
-        return token
+        token
     }
 
     /** Deletes every secret and the Keystore key itself. */
-    fun wipe() {
+    fun wipe(): Unit = synchronized(lock) {
         prefs.edit().clear().apply()
         runCatching { KeyStore.getInstance(ANDROID_KEYSTORE).apply { load(null) }.deleteEntry(ALIAS) }
     }
@@ -62,9 +67,10 @@ class SecretStore(context: Context) {
     private fun keystoreKey(): SecretKey {
         val ks = KeyStore.getInstance(ANDROID_KEYSTORE).apply { load(null) }
         (ks.getKey(ALIAS, null) as? SecretKey)?.let { return it }
+        // StrongBox can fail in more ways than StrongBoxUnavailableException (a ProviderException, for one).
         return try {
             generate(strongBox = true)
-        } catch (_: StrongBoxUnavailableException) {
+        } catch (_: Exception) {
             generate(strongBox = false)
         }
     }

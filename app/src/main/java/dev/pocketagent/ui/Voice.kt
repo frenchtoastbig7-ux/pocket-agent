@@ -19,11 +19,15 @@ class Voice(private val context: Context) {
     private var ttsReady = false
     private var queued: String? = null
 
+    /** Bumped whenever recognition is started or cancelled; callbacks from an older session are dropped. */
+    private var listenSession = 0
+
     val onDeviceRecognition: Boolean get() = SpeechRecognizer.isOnDeviceRecognitionAvailable(context)
     val anyRecognition: Boolean get() = onDeviceRecognition || SpeechRecognizer.isRecognitionAvailable(context)
 
     fun listen(onPartial: (String) -> Unit, onFinal: (String) -> Unit, onError: (String) -> Unit) {
-        recognizer?.destroy()
+        cancelListening()
+        val session = listenSession
         val r = when {
             onDeviceRecognition -> SpeechRecognizer.createOnDeviceSpeechRecognizer(context)
             SpeechRecognizer.isRecognitionAvailable(context) -> SpeechRecognizer.createSpeechRecognizer(context)
@@ -35,14 +39,17 @@ class Voice(private val context: Context) {
         recognizer = r
         r.setRecognitionListener(object : RecognitionListener {
             override fun onResults(results: Bundle) {
+                if (session != listenSession) return
                 onFinal(results.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)?.firstOrNull().orEmpty())
             }
 
             override fun onPartialResults(partialResults: Bundle) {
+                if (session != listenSession) return
                 partialResults.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)?.firstOrNull()?.let(onPartial)
             }
 
             override fun onError(error: Int) {
+                if (session != listenSession) return
                 onError(
                     when (error) {
                         SpeechRecognizer.ERROR_NO_MATCH, SpeechRecognizer.ERROR_SPEECH_TIMEOUT -> "Didn't catch that."
@@ -72,23 +79,58 @@ class Voice(private val context: Context) {
         recognizer?.stopListening()
     }
 
+    /** Drops the current recognition without a result. stopListening() would still deliver one. */
+    fun cancelListening() {
+        listenSession++
+        recognizer?.let {
+            runCatching { it.cancel() }
+            it.destroy()
+        }
+        recognizer = null
+    }
+
     fun speak(text: String) {
         val engine = tts
         if (engine == null) {
             queued = text
             tts = TextToSpeech(context) { status ->
                 ttsReady = status == TextToSpeech.SUCCESS
-                if (ttsReady) queued?.let { tts?.speak(it, TextToSpeech.QUEUE_FLUSH, null, "reply") }
+                if (ttsReady) {
+                    queued?.let(::say)
+                } else {
+                    // Let go of the failed engine so the next reply tries again (one may have been installed since).
+                    tts?.shutdown()
+                    tts = null
+                }
                 queued = null
             }
         } else if (ttsReady) {
-            engine.speak(text, TextToSpeech.QUEUE_FLUSH, null, "reply")
+            say(text)
+        }
+    }
+
+    /** Engines refuse input over their length limit, so long replies go in as a queue of pieces. */
+    private fun say(text: String) {
+        val engine = tts ?: return
+        val limit = (TextToSpeech.getMaxSpeechInputLength() - 1).coerceAtLeast(200)
+        var rest = text.trim()
+        var mode = TextToSpeech.QUEUE_FLUSH
+        var part = 0
+        while (rest.isNotEmpty()) {
+            var cut = rest.length
+            if (cut > limit) {
+                // Prefer the end of a sentence, then any space, in the last part of the window.
+                val window = rest.substring(0, limit)
+                cut = sequenceOf(". ", "\n", " ").map { window.lastIndexOf(it) }.firstOrNull { it > limit / 2 }?.plus(1) ?: limit
+            }
+            if (engine.speak(rest.substring(0, cut), mode, null, "reply-${part++}") != TextToSpeech.SUCCESS) return
+            rest = rest.substring(cut).trimStart()
+            mode = TextToSpeech.QUEUE_ADD
         }
     }
 
     fun shutdown() {
-        recognizer?.destroy()
-        recognizer = null
+        cancelListening()
         tts?.shutdown()
         tts = null
     }

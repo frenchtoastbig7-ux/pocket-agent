@@ -20,6 +20,7 @@ import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
@@ -43,6 +44,8 @@ fun BridgeSection(app: PocketAgentApp) {
     val status by BridgeService.status.collectAsState()
     val activity by BridgeService.activity.collectAsState()
     var enabled by remember { mutableStateOf(settings.bridgeEnabled) }
+    // The notification's Stop button turns the bridge off behind this screen's back.
+    LaunchedEffect(status) { enabled = settings.bridgeEnabled }
     var bind by remember { mutableStateOf(settings.bridgeBind) }
     var refresh by remember { mutableIntStateOf(0) }
     var confirmRotate by remember { mutableStateOf(false) }

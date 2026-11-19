@@ -51,7 +51,7 @@ class AgentLoopLiveTest {
             effort = "low",
             systemPrompt = "You are a test assistant. Keep answers to one short sentence.",
             tools = listOf(CodeWordTool(), SaveNoteTool(saved)),
-            webTools = false,
+            webTools = { false },
             mode = RunMode.INTERACTIVE,
             approver = { tool, summary, _ ->
                 approvals += "${tool.name}: $summary"

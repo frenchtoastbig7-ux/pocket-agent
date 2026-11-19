@@ -17,6 +17,7 @@ import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
@@ -38,7 +39,9 @@ fun AutomationsScreen(app: PocketAgentApp) {
         refresh++
         onPauseOrDispose { }
     }
-    val tasks = remember(refresh) { app.schedules.all().sortedBy { it.nextRunAt ?: Long.MAX_VALUE } }
+    // Changes whenever a run finishes or the agent edits a schedule, so the cards don't show stale results.
+    val stored by app.schedules.changes.collectAsState()
+    val tasks = remember(refresh, stored) { app.schedules.all().sortedBy { it.nextRunAt ?: Long.MAX_VALUE } }
     val exact = remember(refresh) { app.scheduler.canScheduleExact() }
     LaunchedEffect(Unit) { refresh++ }
 
@@ -81,7 +84,9 @@ fun AutomationsScreen(app: PocketAgentApp) {
                             context.startForegroundService(AgentRunService.scheduledRunIntent(context, task.id))
                         }) { Text("Run now") }
                         TextButton(onClick = {
-                            app.scheduler.arm(task.copy(paused = !task.paused))
+                            // Flips only the pause flag on what is stored now; this card may be older than the last run.
+                            val pause = !task.paused
+                            app.scheduler.modify(task.id) { it.copy(paused = pause) }
                             refresh++
                         }) { Text(if (task.paused) "Resume" else "Pause") }
                         TextButton(onClick = {

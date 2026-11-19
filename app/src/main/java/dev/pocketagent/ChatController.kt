@@ -18,6 +18,7 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
@@ -40,8 +41,14 @@ class ChatController(private val app: PocketAgentApp) {
     val finishedReplies = MutableSharedFlow<String>(extraBufferCapacity = 4)
 
     private var loop: AgentLoop? = null
+
+    /** Read by session_search on an IO thread. */
+    @Volatile
     private var sessionId: Long? = null
     private var job: Job? = null
+
+    /** Bumped by [newChat]. A turn from an earlier chat checks it before touching the UI or the session. */
+    private var epoch = 0
     private var nextId = 0L
     private var currentAssistant: Long? = null
     private var currentThinking: Long? = null
@@ -55,15 +62,20 @@ class ChatController(private val app: PocketAgentApp) {
         )
     }
 
-    fun send(text: String) {
+    /** Starts a turn. Returns false when the message was not accepted, so the caller can keep the draft. */
+    fun send(text: String): Boolean {
         val message = text.trim()
-        if (running.value || message.isEmpty()) return
+        if (running.value || message.isEmpty()) return false
         val client = app.factory.client()
         if (client == null) {
             add(ChatItem.Kind.NOTICE, "Add your Anthropic API key in Settings first, or use Claude Code through the bridge.")
-            return
+            return false
         }
         val loop = loop ?: app.factory.newLoop(client, RunMode.INTERACTIVE, approver) { sessionId }.also { loop = it }
+        // A key saved since the last turn takes effect without losing the chat.
+        loop.client = client
+        val startedIn = epoch
+        val knownSession = sessionId
         add(ChatItem.Kind.USER, message)
         currentAssistant = null
         currentThinking = null
@@ -71,23 +83,28 @@ class ChatController(private val app: PocketAgentApp) {
         AgentRunService.startInteractive(app)
 
         job = scope.launch {
+            fun current() = startedIn == epoch
             try {
                 val sid = withContext(Dispatchers.IO) {
-                    (sessionId ?: app.sessions.create("chat", message.take(60)).also { sessionId = it })
+                    // The stored session may have been deleted on the Memory screen since the last turn.
+                    (knownSession?.takeIf { app.sessions.exists(it) } ?: app.sessions.create("chat", message.take(60)))
                         .also { app.sessions.addTurn(it, "user", message) }
                 }
-                val reply = loop.send(message) { event -> withContext(Dispatchers.Main) { handle(event) } }
+                if (current()) sessionId = sid
+                val reply = loop.send(message) { event -> withContext(Dispatchers.Main) { if (current()) handle(event) } }
                 withContext(Dispatchers.IO) { app.sessions.addTurn(sid, "assistant", reply) }
-                if (reply.isNotBlank()) finishedReplies.tryEmit(reply)
+                if (current() && reply.isNotBlank()) finishedReplies.tryEmit(reply)
             } catch (_: CancellationException) {
-                add(ChatItem.Kind.NOTICE, "Stopped.")
+                if (current()) add(ChatItem.Kind.NOTICE, "Stopped.")
             } catch (e: Exception) {
-                add(ChatItem.Kind.NOTICE, describeError(e))
+                // Stop interrupts a blocking read by closing the stream, which surfaces as an I/O error.
+                if (current()) add(ChatItem.Kind.NOTICE, if (isActive) describeError(e) else "Stopped.")
             } finally {
                 running.value = false
                 AgentRunService.stopInteractive(app)
             }
         }
+        return true
     }
 
     /** Cancelling the turn also cancels any approval it is waiting on. */
@@ -98,6 +115,7 @@ class ChatController(private val app: PocketAgentApp) {
     /** Ends the session. Memory written during it shows up in the next chat's prompt. */
     fun newChat() {
         stop()
+        epoch++
         loop = null
         sessionId = null
         toolItems.clear()

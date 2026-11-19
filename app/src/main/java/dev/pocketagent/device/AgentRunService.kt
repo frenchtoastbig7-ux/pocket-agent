@@ -8,6 +8,8 @@ import dev.pocketagent.PocketAgentApp
 import dev.pocketagent.agent.RunMode
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CoroutineStart
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
@@ -23,6 +25,7 @@ class AgentRunService : Service() {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
     private var interactive = false
     private val scheduledJobs = HashMap<String, Job>()
+    private val main = android.os.Handler(android.os.Looper.getMainLooper())
 
     override fun onBind(intent: Intent?) = null
 
@@ -46,31 +49,46 @@ class AgentRunService : Service() {
 
     private fun runScheduled(app: PocketAgentApp, taskId: String) {
         if (scheduledJobs.containsKey(taskId)) return
-        val task = app.schedules.get(taskId) ?: return
-        scheduledJobs[taskId] = scope.launch {
+        val epoch = app.dataEpoch
+        // Nothing is saved once "Wipe all agent data" has run.
+        fun wiped() = app.dataEpoch != epoch
+        val job = scope.launch(start = CoroutineStart.LAZY) {
+            // The next run is armed before this one starts, so the schedule doesn't depend on this run finishing.
+            val task = withContext(Dispatchers.IO) { app.scheduler.advance(taskId) } ?: return@launch
             val report = try {
                 val client = app.factory.client() ?: error("No API key is configured.")
                 val loop = app.factory.newLoop(client, RunMode.UNATTENDED, approver = null) { null }
                 val sessionId = withContext(Dispatchers.IO) {
+                    if (wiped()) throw CancellationException("Data was wiped.")
                     app.sessions.create("automation", task.title).also { app.sessions.addTurn(it, "user", task.prompt) }
                 }
                 val reply = loop.send("Automation \"${task.title}\" is running now.\n\n${task.prompt}") {}
-                withContext(Dispatchers.IO) { app.sessions.addTurn(sessionId, "assistant", reply) }
+                if (!wiped()) withContext(Dispatchers.IO) { app.sessions.addTurn(sessionId, "assistant", reply) }
                 reply.ifBlank { "(The automation produced no report.)" }
             } catch (_: CancellationException) {
                 "Stopped."
             } catch (e: Exception) {
                 "Failed: ${e.message ?: e.javaClass.simpleName}"
             }
-            withContext(Dispatchers.IO) {
-                app.schedules.get(taskId)?.let {
-                    app.scheduler.arm(it.copy(lastRunAt = System.currentTimeMillis(), lastResult = report.take(1000)))
+            // Stop cancels this job; the result is still recorded and shown.
+            withContext(NonCancellable) {
+                if (wiped()) return@withContext
+                withContext(Dispatchers.IO) {
+                    runCatching { app.scheduler.recordResult(taskId, System.currentTimeMillis(), report.take(1000)) }
                 }
+                runCatching { Notifications.automationResult(this@AgentRunService, task.id, task.title, report) }
             }
-            Notifications.automationResult(this@AgentRunService, task.id, task.title, report)
-            scheduledJobs.remove(taskId)
-            stopIfIdle()
         }
+        scheduledJobs[taskId] = job
+        // Runs however the job ends (finished, failed, cancelled before it started), so a stopped automation can be
+        // started again and the service doesn't stay in the foreground.
+        job.invokeOnCompletion {
+            main.post {
+                if (scheduledJobs[taskId] === job) scheduledJobs.remove(taskId)
+                stopIfIdle()
+            }
+        }
+        job.start()
     }
 
     private fun stopIfIdle() {

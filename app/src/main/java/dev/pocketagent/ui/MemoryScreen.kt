@@ -58,7 +58,7 @@ fun MemoryScreen(app: PocketAgentApp) {
         if (userEntries.isEmpty()) item { Empty() }
         items(userEntries) { entry ->
             EntryRow(entry) {
-                app.memory.setEntries(MemoryStore.Target.USER, userEntries - entry)
+                app.memory.forget(MemoryStore.Target.USER, entry)
                 refresh++
             }
         }
@@ -67,7 +67,7 @@ fun MemoryScreen(app: PocketAgentApp) {
         if (memoryEntries.isEmpty()) item { Empty() }
         items(memoryEntries) { entry ->
             EntryRow(entry) {
-                app.memory.setEntries(MemoryStore.Target.MEMORY, memoryEntries - entry)
+                app.memory.forget(MemoryStore.Target.MEMORY, entry)
                 refresh++
             }
         }

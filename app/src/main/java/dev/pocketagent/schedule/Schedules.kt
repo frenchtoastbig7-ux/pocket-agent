@@ -7,7 +7,10 @@ import android.content.Context
 import android.content.Intent
 import dev.pocketagent.PocketAgentApp
 import dev.pocketagent.device.AgentRunService
+import dev.pocketagent.device.Notifications
 import dev.pocketagent.util.Times
+import dev.pocketagent.util.writeTextAtomic
+import kotlinx.coroutines.flow.MutableStateFlow
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
@@ -90,10 +93,13 @@ object ScheduleSpec {
     }.getOrNull()
 
     private fun nextMatching(from: ZonedDateTime, time: LocalTime, dayOk: (DayOfWeek) -> Boolean): ZonedDateTime? {
-        var candidate = from.toLocalDate().atTime(time).atZone(from.zone)
+        // Each day's run is built from the original local time. Stepping a ZonedDateTime forward instead would keep
+        // the shifted hour after crossing a daylight-saving gap (02:30 becoming 03:30 from then on).
+        var date = from.toLocalDate()
         repeat(8) {
-            if (candidate.isAfter(from) && dayOk(candidate.dayOfWeek)) return candidate
-            candidate = candidate.plusDays(1)
+            val candidate = date.atTime(time).atZone(from.zone)
+            if (candidate.isAfter(from) && dayOk(date.dayOfWeek)) return candidate
+            date = date.plusDays(1)
         }
         return null
     }
@@ -101,6 +107,9 @@ object ScheduleSpec {
 
 class ScheduleStore(context: Context) {
     private val file = File(context.filesDir, "schedules.json")
+
+    /** Changes on every write, so the Automations screen can show finished runs without being reopened. */
+    val changes = MutableStateFlow(0)
 
     @Synchronized
     fun all(): List<ScheduledTask> {
@@ -118,23 +127,41 @@ class ScheduleStore(context: Context) {
     @Synchronized
     fun remove(id: String) = write(all().filterNot { it.id == id })
 
+    /** Applies [change] to the stored task, if it still exists, and returns the result. */
+    @Synchronized
+    fun update(id: String, change: (ScheduledTask) -> ScheduledTask): ScheduledTask? {
+        val tasks = all()
+        val current = tasks.firstOrNull { it.id == id } ?: return null
+        val updated = change(current).copy(id = id)
+        write(tasks.map { if (it.id == id) updated else it })
+        return updated
+    }
+
     @Synchronized
     fun clear() {
         file.delete()
+        changes.value++
     }
 
     private fun write(tasks: List<ScheduledTask>) {
-        file.writeText(JSONArray().apply { tasks.forEach { put(it.toJson()) } }.toString())
+        file.writeTextAtomic(JSONArray().apply { tasks.forEach { put(it.toJson()) } }.toString())
+        changes.value++
     }
 }
 
-/** Arms one AlarmManager alarm per task. No push services, no WorkManager; alarms survive reboots via [ScheduleReceiver]. */
+/**
+ * Arms one AlarmManager alarm per task. No push services, no WorkManager; alarms survive reboots via [ScheduleReceiver].
+ * Every method is synchronized, and changes to an existing task go through [modify], [advance] or [recordResult],
+ * which read the stored task under that lock. A finished run can therefore never write back a task that was paused,
+ * edited or deleted while it ran.
+ */
 class Scheduler(private val context: Context, private val store: ScheduleStore) {
     private val alarms = context.getSystemService(AlarmManager::class.java)
 
     fun canScheduleExact(): Boolean = alarms.canScheduleExactAlarms()
 
     /** Arms the next run. With [keepFutureRun], a still-upcoming stored run time is kept instead of recomputed. */
+    @Synchronized
     fun arm(task: ScheduledTask, keepFutureRun: Boolean = false): ScheduledTask {
         alarms.cancel(pendingIntent(task.id))
         val now = System.currentTimeMillis()
@@ -154,13 +181,33 @@ class Scheduler(private val context: Context, private val store: ScheduleStore) 
         return updated
     }
 
+    /** Changes the stored task and re-arms it. Null when the task no longer exists. */
+    @Synchronized
+    fun modify(id: String, change: (ScheduledTask) -> ScheduledTask): ScheduledTask? =
+        store.get(id)?.let { arm(change(it).copy(id = id)) }
+
+    /**
+     * Called as a run starts: arms the following run straight away, so the schedule survives if the process is killed
+     * mid-run. Returns the task to run, or null if it was deleted.
+     */
+    @Synchronized
+    fun advance(id: String): ScheduledTask? = store.get(id)?.let { arm(it) }
+
+    /** Records how a run ended. Touches nothing else: not the prompt, schedule, pause state or alarm. */
+    @Synchronized
+    fun recordResult(id: String, at: Long, result: String): ScheduledTask? =
+        store.update(id) { it.copy(lastRunAt = at, lastResult = result) }
+
+    @Synchronized
     fun remove(id: String) {
         alarms.cancel(pendingIntent(id))
         store.remove(id)
     }
 
+    @Synchronized
     fun rearmAll() = store.all().forEach { arm(it, keepFutureRun = true) }
 
+    @Synchronized
     fun cancelAll() = store.all().forEach { alarms.cancel(pendingIntent(it.id)) }
 
     private fun pendingIntent(id: String): PendingIntent = PendingIntent.getBroadcast(
@@ -177,7 +224,15 @@ class ScheduleReceiver : BroadcastReceiver() {
         when (intent.action) {
             ACTION_RUN -> {
                 val id = intent.getStringExtra(EXTRA_ID) ?: return
-                context.startForegroundService(AgentRunService.scheduledRunIntent(context, id))
+                try {
+                    context.startForegroundService(AgentRunService.scheduledRunIntent(context, id))
+                } catch (e: Exception) {
+                    // Without "Alarms & reminders" the alarm is inexact, and Android doesn't let an inexact alarm
+                    // start a foreground service from the background. Keep the schedule alive and say why it didn't run.
+                    val task = app.scheduler.advance(id) ?: return
+                    app.scheduler.recordResult(id, System.currentTimeMillis(), "Not run: Android blocked the background start.")
+                    Notifications.automationBlocked(context, task.id, task.title)
+                }
             }
             Intent.ACTION_BOOT_COMPLETED,
             Intent.ACTION_MY_PACKAGE_REPLACED -> {

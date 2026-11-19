@@ -18,6 +18,7 @@ import androidx.compose.runtime.MutableState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.saveable.rememberSaveableStateHolder
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
@@ -57,14 +58,19 @@ fun AppRoot(app: PocketAgentApp, voice: Voice, assistLaunch: MutableState<Boolea
                 }
             },
         ) { padding ->
+            // Each tab keeps its saveable state (a half-typed message, say) while another tab is showing.
+            val tabState = rememberSaveableStateHolder()
             Box(Modifier.padding(padding)) {
-                when (tab) {
-                    Tab.CHAT -> ChatScreen(app, voice, assistLaunch)
-                    Tab.AUTOMATIONS -> AutomationsScreen(app)
-                    Tab.MEMORY -> MemoryScreen(app)
-                    Tab.SETTINGS -> SettingsScreen(app, voice, onSecureWindowChanged)
+                tabState.SaveableStateProvider(tab.name) {
+                    when (tab) {
+                        Tab.CHAT -> ChatScreen(app, voice, assistLaunch)
+                        Tab.AUTOMATIONS -> AutomationsScreen(app)
+                        Tab.MEMORY -> MemoryScreen(app)
+                        Tab.SETTINGS -> SettingsScreen(app, voice, onSecureWindowChanged)
+                    }
                 }
             }
         }
+        ApprovalDialog(app)
     }
 }

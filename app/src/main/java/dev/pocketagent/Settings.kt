@@ -52,5 +52,19 @@ class Settings(context: Context) {
     companion object {
         const val DEFAULT_MODEL = "claude-opus-5"
         val EFFORTS = listOf("low", "medium", "high", "xhigh", "max")
+
+        /** The effort levels [model] accepts: xhigh arrived after the 4.6 models, and Opus 4.5 stops at high. */
+        fun effortsFor(model: String): List<String> = when {
+            "opus-4-5" in model -> EFFORTS - setOf("xhigh", "max")
+            "-4-6" in model -> EFFORTS - "xhigh"
+            else -> EFFORTS
+        }
+
+        /** [effort] if [model] accepts it, otherwise the closest level below it. */
+        fun effortFor(model: String, effort: String): String {
+            val allowed = effortsFor(model)
+            if (effort in allowed) return effort
+            return EFFORTS.take(EFFORTS.indexOf(effort).coerceAtLeast(1)).lastOrNull { it in allowed } ?: "high"
+        }
     }
 }

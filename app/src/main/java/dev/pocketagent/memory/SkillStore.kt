@@ -1,6 +1,7 @@
 package dev.pocketagent.memory
 
 import android.content.Context
+import dev.pocketagent.util.writeTextAtomic
 import java.io.File
 
 /**
@@ -28,7 +29,7 @@ class SkillStore(context: Context) {
         require(oneLine.isNotEmpty()) { "A description is required: say when this skill should be used." }
         require(body.length <= MAX_BODY) { "Skill body is ${body.length} characters; keep it under $MAX_BODY." }
         val folder = File(dir, name).apply { mkdirs() }
-        File(folder, FILE).writeText("---\nname: $name\ndescription: $oneLine\n---\n\n${body.trim()}\n")
+        File(folder, FILE).writeTextAtomic("---\nname: $name\ndescription: $oneLine\n---\n\n${body.trim()}\n")
     }
 
     @Synchronized

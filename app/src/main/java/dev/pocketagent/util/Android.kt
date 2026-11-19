@@ -4,6 +4,9 @@ import android.content.Context
 import android.content.pm.PackageManager
 import android.graphics.Bitmap
 import java.io.ByteArrayOutputStream
+import java.io.File
+import java.nio.file.Files
+import java.nio.file.StandardCopyOption
 import java.time.Instant
 import java.time.LocalDate
 import java.time.LocalDateTime
@@ -12,6 +15,23 @@ import java.time.ZoneId
 import java.time.ZonedDateTime
 import java.time.format.DateTimeFormatter
 
+/**
+ * Replaces the file's contents in one step: the text goes to a sibling temp file, is synced to storage, then renamed
+ * over the original. If anything fails on the way, the previous contents are still there.
+ */
+fun File.writeTextAtomic(text: String) {
+    val tmp = File(parentFile, "$name.tmp")
+    try {
+        tmp.outputStream().use { out ->
+            out.write(text.toByteArray(Charsets.UTF_8))
+            out.fd.sync()
+        }
+        Files.move(tmp.toPath(), toPath(), StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING)
+    } finally {
+        tmp.delete()
+    }
+}
+
 fun Context.hasPermission(permission: String): Boolean =
     checkSelfPermission(permission) == PackageManager.PERMISSION_GRANTED
 
@@ -19,7 +39,8 @@ object Images {
     /** Scales by [scale] (1.0 = unchanged) and encodes as JPEG, the smallest format Claude accepts for photos/screens. */
     fun jpeg(src: Bitmap, scale: Float = 1f, quality: Int = 80): ByteArray {
         val bmp = if (scale < 1f) {
-            Bitmap.createScaledBitmap(src, (src.width * scale).toInt(), (src.height * scale).toInt(), true)
+            // At least one pixel each way: a 1x2000 image would otherwise scale to a width of zero and throw.
+            Bitmap.createScaledBitmap(src, (src.width * scale).toInt().coerceAtLeast(1), (src.height * scale).toInt().coerceAtLeast(1), true)
         } else src
         return ByteArrayOutputStream().use { out ->
             bmp.compress(Bitmap.CompressFormat.JPEG, quality, out)

@@ -20,15 +20,16 @@ class RequestShapeTest {
         override suspend fun run(input: JsonNode) = ToolOutput(input.str("text").orEmpty())
     }
 
-    private fun loop(webTools: Boolean) = AgentLoop(
+    private fun loop(webTools: Boolean, mode: RunMode = RunMode.INTERACTIVE, enabled: (ToolGroup) -> Boolean = { true }) = AgentLoop(
         client = AnthropicOkHttpClient.builder().apiKey("sk-ant-test").build(),
         model = "claude-opus-5",
         effort = "xhigh",
         systemPrompt = "system prompt",
         tools = listOf(EchoTool()),
-        webTools = webTools,
-        mode = RunMode.INTERACTIVE,
+        webTools = { webTools },
+        mode = mode,
         approver = null,
+        isEnabled = enabled,
     )
 
     private fun body(loop: AgentLoop): JsonNode {
@@ -68,6 +69,35 @@ class RequestShapeTest {
 
         val withoutWeb = body(loop(webTools = false))["tools"]
         assertEquals(1, withoutWeb.size())
+    }
+
+    @Test
+    fun runsNobodyWatchesGetAFewSearchesAndNoFetch() {
+        for (mode in listOf(RunMode.UNATTENDED, RunMode.SUBAGENT)) {
+            val tools = body(loop(webTools = true, mode = mode))["tools"]
+            val types = tools.map { it["type"]?.asText() }
+            assertTrue(types.toString(), types.contains("web_search_20260209") && !types.contains("web_fetch_20260209"))
+            assertEquals(5, tools.first { it["type"]?.asText() == "web_search_20260209" }["max_uses"].asInt())
+        }
+    }
+
+    @Test
+    fun aCapabilitySwitchedOffMidChatLeavesTheNextRequest() {
+        var on = true
+        val loop = loop(webTools = false, enabled = { on })
+        assertEquals(1, body(loop)["tools"].size())
+        on = false
+        val tools = loop.buildParams().let { JsonValue.from(it._body()).convert(JsonNode::class.java)!! }["tools"]
+        assertTrue(tools == null || tools.size() == 0)
+    }
+
+    @Test
+    fun effortLevelsFollowTheModel() {
+        assertEquals(dev.pocketagent.Settings.EFFORTS, dev.pocketagent.Settings.effortsFor("claude-opus-5"))
+        assertTrue("xhigh" !in dev.pocketagent.Settings.effortsFor("claude-sonnet-4-6"))
+        assertEquals("high", dev.pocketagent.Settings.effortFor("claude-sonnet-4-6", "xhigh"))
+        assertEquals("max", dev.pocketagent.Settings.effortFor("claude-sonnet-4-6", "max"))
+        assertEquals("xhigh", dev.pocketagent.Settings.effortFor("claude-opus-5", "xhigh"))
     }
 
     @Test
