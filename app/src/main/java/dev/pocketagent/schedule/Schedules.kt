@@ -180,6 +180,12 @@ class Scheduler(private val context: Context, private val store: ScheduleStore) 
                 alarms.setAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, at, pendingIntent(task.id))
             }
         }
+        if (saved.isFailure) {
+            // That fallback is only for a task that is stored and active. A failed create or a failed resume must not
+            // leave an alarm that would start a task the file says is absent or paused.
+            val stored = runCatching { store.get(task.id) }.getOrNull()
+            if (stored == null || stored.paused) alarms.cancel(pendingIntent(task.id))
+        }
         saved.getOrThrow()
         return updated
     }
