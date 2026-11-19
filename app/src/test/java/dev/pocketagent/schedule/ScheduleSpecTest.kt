@@ -27,6 +27,13 @@ class ScheduleSpecTest {
     @Test
     fun weekdaysSkipWeekend() = assertEquals(at(21, 8), ScheduleSpec.nextAfter("weekdays 08:00", at(18, 18)))
 
+    // Clocks in Berlin jump from 02:00 to 03:00 on Sunday 2026-03-29, so 02:30 doesn't exist that day.
+    @Test
+    fun weekdaysKeepTheirTimeAcrossTheSpringClockChange() = assertEquals(
+        ZonedDateTime.of(2026, 3, 30, 2, 30, 0, 0, zone),
+        ScheduleSpec.nextAfter("weekdays 02:30", ZonedDateTime.of(2026, 3, 27, 18, 0, 0, 0, zone)),
+    )
+
     @Test
     fun weeklyFindsNamedDay() = assertEquals(at(20, 10), ScheduleSpec.nextAfter("weekly sunday 10:00", mondayMorning))
 

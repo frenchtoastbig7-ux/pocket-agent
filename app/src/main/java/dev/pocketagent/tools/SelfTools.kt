@@ -128,9 +128,7 @@ class SessionSearchTool(private val store: SessionStore, private val currentSess
 
     override suspend fun run(input: JsonNode): ToolOutput = withContext(Dispatchers.IO) {
         val current = currentSession()
-        val hits = store.search(input.str("query").orEmpty(), input.int("limit", 10).coerceIn(1, 30) + 5)
-            .filter { it.sessionId != current }
-            .take(input.int("limit", 10).coerceIn(1, 30))
+        val hits = store.search(input.str("query").orEmpty(), input.int("limit", 10).coerceIn(1, 30), excludeSession = current)
         if (hits.isEmpty()) return@withContext ToolOutput("No past chats match.")
         ToolOutput(hits.joinToString("\n") { "[${Times.fmt(it.startedAt)}] \"${it.title}\" (${it.role}): ${it.snippet}" })
     }
@@ -160,7 +158,7 @@ class ListSchedulesTool(private val store: ScheduleStore) : AgentTool(
 class ManageScheduleTool(private val store: ScheduleStore, private val scheduler: Scheduler) : AgentTool(
     name = "manage_schedule",
     description = "Create, change, pause, resume or delete a scheduled automation. Each run starts a fresh unattended " +
-        "session with read-only tools (it can read messages, calendar, notifications, memory and the web, but can't " +
+        "session with read-only tools (it can read messages, calendar, notifications and memory and search the web, but can't " +
         "send, tap or change anything) and delivers its final answer as a private notification. Write the prompt as " +
         "a complete, standalone instruction. ${ScheduleSpec.HELP}",
     group = ToolGroup.AUTOMATION,
@@ -195,17 +193,22 @@ class ManageScheduleTool(private val store: ScheduleStore, private val scheduler
                     if (!scheduler.canScheduleExact()) " Exact alarms are not allowed, so runs may be delayed by several minutes; the user can allow \"Alarms & reminders\" for Pocket Agent." else ""
             }
             val id = input.str("id") ?: error("id is required.")
-            val task = store.get(id) ?: error("No automation [$id].")
+            val missing = "No automation [$id]."
+            store.get(id) ?: error(missing)
             when (action) {
                 "delete" -> scheduler.remove(id).let { "Deleted [$id]." }
-                "pause" -> scheduler.arm(task.copy(paused = true)).let { "Paused [$id]." }
-                "resume" -> scheduler.arm(task.copy(paused = false)).let { "Resumed [$id]; next run ${it.nextRunAt?.let(Times::fmt) ?: "never"}." }
+                "pause" -> (scheduler.modify(id) { it.copy(paused = true) } ?: error(missing)).let { "Paused [$id]." }
+                "resume" -> (scheduler.modify(id) { it.copy(paused = false) } ?: error(missing))
+                    .let { "Resumed [$id]; next run ${it.nextRunAt?.let(Times::fmt) ?: "never"}." }
                 "update" -> {
-                    val spec = input.str("schedule") ?: task.spec
-                    require(ScheduleSpec.isValid(spec)) { "Can't parse \"$spec\". ${ScheduleSpec.HELP}" }
-                    val updated = scheduler.arm(
-                        task.copy(title = input.str("title") ?: task.title, prompt = input.str("prompt") ?: task.prompt, spec = spec)
-                    )
+                    input.str("schedule")?.let { require(ScheduleSpec.isValid(it)) { "Can't parse \"$it\". ${ScheduleSpec.HELP}" } }
+                    val updated = scheduler.modify(id) { task ->
+                        task.copy(
+                            title = input.str("title") ?: task.title,
+                            prompt = input.str("prompt") ?: task.prompt,
+                            spec = input.str("schedule") ?: task.spec,
+                        )
+                    } ?: error(missing)
                     "Updated [$id]; next run ${updated.nextRunAt?.let(Times::fmt) ?: "never"}."
                 }
                 else -> error("Unknown action.")

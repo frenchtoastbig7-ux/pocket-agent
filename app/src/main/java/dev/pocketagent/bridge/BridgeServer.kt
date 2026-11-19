@@ -46,8 +46,8 @@ fun interface BridgeApprover {
  * computer under their Claude subscription; this server only executes tools and never sees any Claude credentials.
  *
  * Every request must carry `Authorization: Bearer <token>`. Anything that sends, taps, types or changes data is
- * approved on the phone. Approval and execution share one lock, so a tap can never run while an approval prompt is
- * on screen, and the model can't approve its own action.
+ * approved on the phone. Bridge calls run one at a time, and the screen tools refuse to act while any approval prompt
+ * is up (see AgentAccessibilityService), so no call can press Allow, its own or the in-app chat's.
  */
 class BridgeServer(
     private val tools: List<AgentTool>,
@@ -55,6 +55,8 @@ class BridgeServer(
     private val host: String,
     private val port: Int,
     private val approver: BridgeApprover,
+    /** Asked on every call, so a capability switched off on the phone stops working without a restart. */
+    private val isEnabled: (dev.pocketagent.agent.ToolGroup) -> Boolean = { true },
     private val allowWindowMs: Long = 15 * 60_000L,
     private val clock: () -> Long = System::currentTimeMillis,
     private val onActivity: (String) -> Unit = {},
@@ -73,7 +75,10 @@ class BridgeServer(
                     finish()
                 }
             }
-            mcpStreamableHttp { mcpServer }
+            // The SDK's DNS-rebinding check allows only localhost names by default, which would reject every request
+            // made to the VPN address the bridge is bound to.
+            val hosts = (listOf(host, "localhost", "127.0.0.1", "[::1]")).distinct().flatMap { listOf(it, "$it:$port") }
+            mcpStreamableHttp(allowedHosts = hosts) { mcpServer }
         }.start(wait = false)
     }
 
@@ -116,6 +121,13 @@ class BridgeServer(
         val input: JsonNode = mapper.readTree(arguments?.toString() ?: "{}")
         val summary = runCatching { tool.summarize(input) }.getOrDefault(tool.name)
         onActivity("${tool.name}: ${summary.lineSequence().firstOrNull().orEmpty().take(80)}")
+
+        if (!isEnabled(tool.group)) {
+            return@withLock CallToolResult(
+                content = listOf(TextContent("${tool.group.label} is switched off in Pocket Agent's settings on the phone.")),
+                isError = true,
+            )
+        }
 
         if (tool.risk != Risk.READ && !allowedNow(tool)) {
             when (approver.approve(tool, summary)) {

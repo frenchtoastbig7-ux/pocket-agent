@@ -34,28 +34,47 @@ class SessionStore(context: Context) : SQLiteOpenHelper(context, "sessions.db", 
         put("source", source)
     })
 
-    fun addTurn(sessionId: Long, role: String, text: String) {
-        if (text.isBlank()) return
-        writableDatabase.insert("turns", null, ContentValues().apply {
-            put("session_id", sessionId)
-            put("role", role)
-            put("text", text)
-            put("created_at", System.currentTimeMillis())
-        })
+    fun exists(sessionId: Long): Boolean =
+        readableDatabase.rawQuery("SELECT 1 FROM sessions WHERE id = ?", arrayOf(sessionId.toString())).use { it.moveToFirst() }
+
+    /**
+     * Saves one turn. Returns false, and saves nothing, when the text is blank or the session has been deleted since
+     * the caller got its id (a turn without a session could never be found or removed). A failed insert throws.
+     */
+    fun addTurn(sessionId: Long, role: String, text: String): Boolean {
+        if (text.isBlank()) return false
+        val db = writableDatabase
+        db.beginTransaction()
+        try {
+            if (!exists(sessionId)) return false
+            db.insertOrThrow("turns", null, ContentValues().apply {
+                put("session_id", sessionId)
+                put("role", role)
+                put("text", text)
+                put("created_at", System.currentTimeMillis())
+            })
+            db.setTransactionSuccessful()
+            return true
+        } finally {
+            db.endTransaction()
+        }
     }
 
-    fun search(query: String, limit: Int): List<Hit> {
+    /** [excludeSession] is left out before the limit applies, so a long current chat can't crowd out older ones. */
+    fun search(query: String, limit: Int, excludeSession: Long? = null): List<Hit> {
         val words = Regex("[\\p{L}\\p{N}]+").findAll(query).map { "\"${it.value}\"" }.take(8).toList()
         if (words.isEmpty()) return emptyList()
         // All words first; if that finds nothing, any word.
-        return runSearch(words.joinToString(" "), limit).ifEmpty { runSearch(words.joinToString(" OR "), limit) }
+        return runSearch(words.joinToString(" "), limit, excludeSession)
+            .ifEmpty { runSearch(words.joinToString(" OR "), limit, excludeSession) }
     }
 
-    private fun runSearch(match: String, limit: Int): List<Hit> {
+    private fun runSearch(match: String, limit: Int, excludeSession: Long?): List<Hit> {
         val sql = "SELECT turns.session_id, sessions.title, sessions.started_at, turns.role, " +
             "snippet(turns, '[', ']', '…', 2, 32) FROM turns JOIN sessions ON sessions.id = turns.session_id " +
-            "WHERE turns MATCH ? ORDER BY turns.created_at DESC LIMIT ?"
-        return readableDatabase.rawQuery(sql, arrayOf(match, limit.toString())).use { c ->
+            // Compared on sessions.id: the FTS column has no type, so a bound argument would never equal it.
+            "WHERE turns MATCH ? AND sessions.id != ? ORDER BY turns.created_at DESC LIMIT ?"
+        return readableDatabase.rawQuery(sql, arrayOf(match, (excludeSession ?: -1L).toString(), limit.toString())).use { c ->
             buildList {
                 while (c.moveToNext()) add(Hit(c.getLong(0), c.getString(1), c.getLong(2), c.getString(3), c.getString(4)))
             }
@@ -67,11 +86,12 @@ class SessionStore(context: Context) : SQLiteOpenHelper(context, "sessions.db", 
             .use { c -> buildList { while (c.moveToNext()) add(Session(c.getLong(0), c.getString(1), c.getLong(2), c.getString(3))) } }
 
     fun turns(sessionId: Long): List<Turn> =
-        readableDatabase.rawQuery("SELECT role, text, created_at FROM turns WHERE session_id = ? ORDER BY created_at", arrayOf(sessionId.toString()))
+        readableDatabase.rawQuery("SELECT role, text, created_at FROM turns WHERE CAST(session_id AS INTEGER) = ? ORDER BY CAST(created_at AS INTEGER)", arrayOf(sessionId.toString()))
             .use { c -> buildList { while (c.moveToNext()) add(Turn(c.getString(0), c.getString(1), c.getLong(2))) } }
 
     fun delete(sessionId: Long) {
-        writableDatabase.delete("turns", "session_id = ?", arrayOf(sessionId.toString()))
+        // The FTS column has no type, so the stored integer must be cast before it can equal a bound argument.
+        writableDatabase.delete("turns", "CAST(session_id AS INTEGER) = ?", arrayOf(sessionId.toString()))
         writableDatabase.delete("sessions", "id = ?", arrayOf(sessionId.toString()))
     }
 

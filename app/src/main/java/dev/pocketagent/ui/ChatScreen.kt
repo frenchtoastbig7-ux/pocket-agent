@@ -28,6 +28,7 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.MutableState
 import androidx.compose.runtime.collectAsState
@@ -50,7 +51,6 @@ fun ChatScreen(app: PocketAgentApp, voice: Voice, assistLaunch: MutableState<Boo
     val controller = app.controller
     val items by controller.items.collectAsState()
     val running by controller.running.collectAsState()
-    val pending by app.approvals.pending.collectAsState()
     var input by rememberSaveable { mutableStateOf("") }
     var listening by remember { mutableStateOf(false) }
     val listState = rememberLazyListState()
@@ -61,10 +61,8 @@ fun ChatScreen(app: PocketAgentApp, voice: Voice, assistLaunch: MutableState<Boo
             onPartial = { input = it },
             onFinal = { text ->
                 listening = false
-                if (text.isNotBlank()) {
-                    controller.send(text)
-                    input = ""
-                }
+                // Keep the words in the box if the message wasn't accepted (no key yet, or a turn is running).
+                input = if (text.isNotBlank() && controller.send(text)) "" else text
             },
             onError = { message ->
                 listening = false
@@ -75,6 +73,11 @@ fun ChatScreen(app: PocketAgentApp, voice: Voice, assistLaunch: MutableState<Boo
 
     val micPermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
         if (granted) startListening()
+    }
+
+    // Leaving the tab ends recognition: a late result must not send a message from a screen that is gone.
+    DisposableEffect(Unit) {
+        onDispose { voice.cancelListening() }
     }
 
     LaunchedEffect(items.size, items.lastOrNull()?.text?.length) {
@@ -125,25 +128,27 @@ fun ChatScreen(app: PocketAgentApp, voice: Voice, assistLaunch: MutableState<Boo
             Column(Modifier.padding(start = 6.dp)) {
                 if (running) {
                     Button(onClick = { controller.stop() }) { Text("Stop") }
+                } else if (listening) {
+                    // Stays Done while partial results fill the box; the final result sends the message.
+                    FilledTonalButton(onClick = { voice.stopListening() }) { Text("Done") }
                 } else if (input.isBlank()) {
-                    FilledTonalButton(onClick = {
-                        if (listening) {
-                            voice.stopListening()
-                            listening = false
-                        } else {
-                            micPermission.launch(Manifest.permission.RECORD_AUDIO)
-                        }
-                    }) { Text(if (listening) "Done" else "🎤") }
+                    FilledTonalButton(onClick = { micPermission.launch(Manifest.permission.RECORD_AUDIO) }) { Text("🎤") }
                 } else {
-                    Button(onClick = {
-                        controller.send(input)
-                        input = ""
-                    }) { Text("Send") }
+                    Button(onClick = { if (controller.send(input)) input = "" }) { Text("Send") }
                 }
             }
         }
     }
 
+}
+
+/**
+ * The in-app approval prompt. Hosted by AppRoot above the tabs, because the broker sends prompts here whenever the
+ * app is on screen, whichever tab is showing. Each button answers the prompt it was drawn for.
+ */
+@Composable
+fun ApprovalDialog(app: PocketAgentApp) {
+    val pending by app.approvals.pending.collectAsState()
     pending?.let { approval ->
         AlertDialog(
             onDismissRequest = {},
@@ -156,12 +161,12 @@ fun ChatScreen(app: PocketAgentApp, voice: Voice, assistLaunch: MutableState<Boo
             confirmButton = {
                 Row {
                     approval.forTaskLabel?.let { label ->
-                        TextButton(onClick = { app.approvals.resolve(ApprovalDecision.FOR_TASK) }) { Text(label) }
+                        TextButton(onClick = { app.approvals.resolve(approval, ApprovalDecision.FOR_TASK) }) { Text(label) }
                     }
-                    TextButton(onClick = { app.approvals.resolve(ApprovalDecision.ONCE) }) { Text("Allow") }
+                    TextButton(onClick = { app.approvals.resolve(approval, ApprovalDecision.ONCE) }) { Text("Allow") }
                 }
             },
-            dismissButton = { TextButton(onClick = { app.approvals.resolve(ApprovalDecision.DENY) }) { Text("Deny") } },
+            dismissButton = { TextButton(onClick = { app.approvals.resolve(approval, ApprovalDecision.DENY) }) { Text("Deny") } },
         )
     }
 }

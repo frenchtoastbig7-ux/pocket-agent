@@ -89,7 +89,7 @@ class TapTool : AgentTool(
             else -> return ToolOutput.error("Give either 'element' or both 'x' and 'y'.")
         }
         settle()
-        return ToolOutput(result)
+        return result
     }
 }
 
@@ -114,7 +114,7 @@ class TypeTextTool : AgentTool(
         val element = input.intOrNull("element") ?: return ToolOutput.error("Missing 'element'.")
         val result = service.setText(element, input.str("text").orEmpty(), input.bool("submit"))
         settle()
-        return ToolOutput(result)
+        return result
     }
 }
 
@@ -137,7 +137,7 @@ class ScrollTool : AgentTool(
         val service = AgentAccessibilityService.instance ?: return SERVICE_OFF
         val result = service.scroll(input.intOrNull("element"), input.str("direction") ?: "down")
         settle()
-        return ToolOutput(result)
+        return result
     }
 }
 
@@ -164,7 +164,7 @@ class SwipeTool : AgentTool(
             input.int("duration_ms", 300).coerceIn(50, 3000).toLong(),
         )
         settle()
-        return ToolOutput(result)
+        return result
     }
 }
 
@@ -185,6 +185,6 @@ class GlobalActionTool : AgentTool(
         val service = AgentAccessibilityService.instance ?: return SERVICE_OFF
         val result = service.global(input.str("action").orEmpty())
         settle()
-        return ToolOutput(result)
+        return result
     }
 }

@@ -25,6 +25,7 @@ import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.key
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -55,6 +56,18 @@ private val DATA_PERMISSIONS = listOf(
 
 @Composable
 fun SettingsScreen(app: PocketAgentApp, voice: Voice, onSecureWindowChanged: (Boolean) -> Unit) {
+    // A wipe resets every preference, so the whole screen is rebuilt from the stored values afterwards.
+    var wipes by remember { mutableIntStateOf(0) }
+    key(wipes) {
+        SettingsContent(app, voice, onSecureWindowChanged, onWiped = {
+            onSecureWindowChanged(app.settings.secureWindow)
+            wipes++
+        })
+    }
+}
+
+@Composable
+private fun SettingsContent(app: PocketAgentApp, voice: Voice, onSecureWindowChanged: (Boolean) -> Unit, onWiped: () -> Unit) {
     val context = LocalContext.current
     val settings = app.settings
     var refresh by remember { mutableIntStateOf(0) }
@@ -112,6 +125,12 @@ fun SettingsScreen(app: PocketAgentApp, voice: Voice, onSecureWindowChanged: (Bo
             onValueChange = {
                 model = it
                 settings.model = it
+                // Don't leave a level selected that the new model would reject.
+                val fitting = dev.pocketagent.Settings.effortFor(it.trim(), effort)
+                if (fitting != effort) {
+                    effort = fitting
+                    settings.effort = fitting
+                }
             },
             label = { Text("Model") },
             singleLine = true,
@@ -119,7 +138,7 @@ fun SettingsScreen(app: PocketAgentApp, voice: Voice, onSecureWindowChanged: (Bo
         )
         Text("Effort (higher is more thorough, slower and costs more)", style = MaterialTheme.typography.bodySmall)
         FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-            dev.pocketagent.Settings.EFFORTS.forEach { level ->
+            dev.pocketagent.Settings.effortsFor(model.trim()).forEach { level ->
                 FilterChip(selected = effort == level, onClick = {
                     effort = level
                     settings.effort = level
@@ -136,7 +155,7 @@ fun SettingsScreen(app: PocketAgentApp, voice: Voice, onSecureWindowChanged: (Bo
             modifier = Modifier.fillMaxWidth(),
             minLines = 3,
         )
-        Text("Model, effort and instructions apply from the next new chat.", style = MaterialTheme.typography.bodySmall)
+        Text("Model, effort and instructions apply from the next new chat. A new key and capability switches apply right away.", style = MaterialTheme.typography.bodySmall)
 
         Heading("Capabilities")
         ToolGroup.entries.forEach { group ->
@@ -222,8 +241,7 @@ fun SettingsScreen(app: PocketAgentApp, voice: Voice, onSecureWindowChanged: (Bo
                 TextButton(onClick = {
                     app.wipeEverything()
                     confirmWipe = false
-                    hasKey = false
-                    refresh++
+                    onWiped()
                 }) { Text("Wipe") }
             },
             dismissButton = { TextButton(onClick = { confirmWipe = false }) { Text("Cancel") } },

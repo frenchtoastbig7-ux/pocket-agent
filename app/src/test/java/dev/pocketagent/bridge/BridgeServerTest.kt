@@ -35,6 +35,7 @@ class BridgeServerTest {
     private val approvals = mutableListOf<String>()
     private var nextDecision = ApprovalDecision.DENY
     private var now = 1_000_000L
+    private val off = mutableSetOf<ToolGroup>()
     private lateinit var server: BridgeServer
 
     private class EchoTool : AgentTool("echo", "Echoes text.", ToolGroup.DEVICE, Risk.READ) {
@@ -65,6 +66,7 @@ class BridgeServerTest {
                 nextDecision
             },
             clock = { now },
+            isEnabled = { it !in off },
         )
         server.start()
     }
@@ -72,14 +74,16 @@ class BridgeServerTest {
     @After
     fun stop() = server.stop()
 
-    private fun rawStatus(authorization: String?): Int {
+    private fun rawStatus(authorization: String?, host: String? = null, body: String = """{"jsonrpc":"2.0","id":1,"method":"ping"}"""): Int {
+        if (host != null) System.setProperty("sun.net.http.allowRestrictedHeaders", "true")
         val conn = URL("http://127.0.0.1:$port/mcp").openConnection() as HttpURLConnection
         conn.requestMethod = "POST"
         conn.setRequestProperty("Content-Type", "application/json")
         conn.setRequestProperty("Accept", "application/json, text/event-stream")
         authorization?.let { conn.setRequestProperty("Authorization", it) }
+        host?.let { conn.setRequestProperty("Host", it) }
         conn.doOutput = true
-        conn.outputStream.use { it.write("""{"jsonrpc":"2.0","id":1,"method":"ping"}""".toByteArray()) }
+        conn.outputStream.use { it.write(body.toByteArray()) }
         return conn.responseCode.also { conn.disconnect() }
     }
 
@@ -89,6 +93,31 @@ class BridgeServerTest {
         assertEquals(401, rawStatus("Bearer wrong"))
         assertEquals(401, rawStatus(token))
         assertTrue("valid token should pass auth", rawStatus("Bearer $token") != 401)
+    }
+
+    @Test
+    fun hostCheckAcceptsTheBoundAddressAndRejectsOthers() {
+        val init = """{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"t","version":"1"}}}"""
+        assertEquals(200, rawStatus("Bearer $token", host = "127.0.0.1:$port", body = init))
+        val foreign = rawStatus("Bearer $token", host = "evil.example:$port", body = init)
+        assertTrue("a foreign Host header should be refused, got $foreign", foreign in 400..499)
+    }
+
+    @Test
+    fun aCapabilitySwitchedOffOnThePhoneIsRefused() = runBlocking {
+        val http = HttpClient(CIO) {
+            install(SSE)
+            defaultRequest { header("Authorization", "Bearer $token") }
+        }
+        val client = Client(Implementation(name = "test", version = "1.0"))
+        client.connect(StreamableHttpClientTransport(http, "http://127.0.0.1:$port/mcp"))
+        off += ToolGroup.DEVICE
+        val refused = client.callTool("echo", mapOf("text" to "hi"))
+        assertEquals(true, refused.isError)
+        off.clear()
+        assertEquals("echo: hi", (client.callTool("echo", mapOf("text" to "hi")).content.first() as TextContent).text)
+        client.close()
+        http.close()
     }
 
     @Test

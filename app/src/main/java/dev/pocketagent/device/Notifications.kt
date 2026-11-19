@@ -103,6 +103,13 @@ object Notifications {
         context.getSystemService(NotificationManager::class.java).notify(1000 + taskId.hashCode() and 0xFFFFFF, n)
     }
 
+    /** Android refused to start a scheduled run from the background (see ScheduleReceiver). */
+    fun automationBlocked(context: Context, taskId: String, title: String) = automationResult(
+        context, taskId, title,
+        "This automation couldn't start in the background. Allow \"Alarms & reminders\" for Pocket Agent " +
+            "(Automations tab), or open the app and tap Run now.",
+    )
+
     private fun publicVersion(context: Context, channel: String, text: String) = Notification.Builder(context, channel)
         .setSmallIcon(R.drawable.ic_stat_agent)
         .setContentTitle(text)

@@ -54,6 +54,10 @@ class BridgeService : Service() {
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val rebindLock = Mutex()
+
+    /** Held while a listener is published or torn down, so one started during onDestroy can't outlive the service. */
+    private val lifecycle = Any()
+    private var destroyed = false
     private var server: BridgeServer? = null
     private var boundHost: String? = null
     private var callbackRegistered = false
@@ -95,9 +99,11 @@ class BridgeService : Service() {
                 else VpnAddresses.candidates(this@BridgeService).firstOrNull()?.address
                 if (!force && host == boundHost && server != null) return@withLock
 
-                server?.stop()
-                server = null
-                boundHost = null
+                synchronized(lifecycle) {
+                    server?.stop()
+                    server = null
+                    boundHost = null
+                }
 
                 if (host == null) {
                     status.value = Status.Waiting("No VPN connection. Turn on Tailscale on this phone.")
@@ -110,6 +116,7 @@ class BridgeService : Service() {
                     token = app.secrets.bridgeToken(),
                     host = host,
                     port = port,
+                    isEnabled = app.settings::isEnabled,
                     approver = { tool, summary ->
                         app.approvals.request(
                             title = "Claude Code wants to ${tool.name.replace('_', ' ')}",
@@ -129,9 +136,15 @@ class BridgeService : Service() {
                     Notifications.updateBridge(this@BridgeService, "Couldn't start")
                     return@withLock
                 }
-                server = candidate
-                boundHost = host
-                status.value = Status.Running(host, port)
+                synchronized(lifecycle) {
+                    if (destroyed) {
+                        candidate.stop()
+                        return@withLock
+                    }
+                    server = candidate
+                    boundHost = host
+                    status.value = Status.Running(host, port)
+                }
                 Notifications.updateBridge(this@BridgeService, "Listening on $host:$port")
             }
         }
@@ -141,9 +154,12 @@ class BridgeService : Service() {
         if (callbackRegistered) {
             runCatching { getSystemService(ConnectivityManager::class.java).unregisterNetworkCallback(networkCallback) }
         }
-        server?.stop()
-        server = null
-        status.value = Status.Stopped
+        synchronized(lifecycle) {
+            destroyed = true
+            server?.stop()
+            server = null
+            status.value = Status.Stopped
+        }
         scope.cancel()
         super.onDestroy()
     }

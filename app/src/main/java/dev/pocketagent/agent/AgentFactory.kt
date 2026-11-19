@@ -57,12 +57,13 @@ class AgentFactory(private val app: PocketAgentApp) {
         return AgentLoop(
             client = client,
             model = settings.model,
-            effort = if (mode == RunMode.SUBAGENT) "low" else settings.effort,
+            effort = if (mode == RunMode.SUBAGENT) "low" else dev.pocketagent.Settings.effortFor(settings.model, settings.effort),
             systemPrompt = systemPrompt(mode),
             tools = tools(mode, currentSession),
-            webTools = settings.isEnabled(ToolGroup.WEB),
+            webTools = { settings.isEnabled(ToolGroup.WEB) },
             mode = mode,
             approver = approver,
+            isEnabled = settings::isEnabled,
         )
     }
 
@@ -72,35 +73,29 @@ class AgentFactory(private val app: PocketAgentApp) {
      */
     fun bridgeTools(): List<AgentTool> {
         val s = app.settings
-        return buildList {
-            if (s.isEnabled(ToolGroup.PERSONAL)) addAll(
-                listOf(
-                    SearchContactsTool(app), ListSmsTool(app), SendSmsTool(app), ListCalendarEventsTool(app),
-                    CreateCalendarEventTool(app), ListCallLogTool(app), ListNotificationsTool(app),
-                )
-            )
-            if (s.isEnabled(ToolGroup.FILES)) addAll(listOf(ListFilesTool(app.workspace), ReadFileTool(app.workspace), WriteFileTool(app.workspace)))
-            if (s.isEnabled(ToolGroup.DEVICE)) addAll(listOf(DeviceStatusTool(app), ListAppsTool(app), OpenAppTool(app)))
-            if (s.isEnabled(ToolGroup.SCREEN)) addAll(
-                listOf(ReadScreenTool(), ScreenshotTool(), TapTool(), TypeTextTool(), ScrollTool(), SwipeTool(), GlobalActionTool())
-            )
-        }
+        return phoneTools(s) + if (s.isEnabled(ToolGroup.SCREEN)) screenTools() else emptyList()
     }
+
+    /** The phone tools shared by the in-app chat and the bridge. */
+    private fun phoneTools(s: dev.pocketagent.Settings): List<AgentTool> = buildList {
+        if (s.isEnabled(ToolGroup.PERSONAL)) addAll(
+            listOf(
+                SearchContactsTool(app), ListSmsTool(app), SendSmsTool(app), ListCalendarEventsTool(app),
+                CreateCalendarEventTool(app), ListCallLogTool(app), ListNotificationsTool(app),
+            )
+        )
+        if (s.isEnabled(ToolGroup.FILES)) addAll(listOf(ListFilesTool(app.workspace), ReadFileTool(app.workspace), WriteFileTool(app.workspace)))
+        if (s.isEnabled(ToolGroup.DEVICE)) addAll(listOf(DeviceStatusTool(app), ListAppsTool(app), OpenAppTool(app)))
+    }
+
+    private fun screenTools(): List<AgentTool> =
+        listOf(ReadScreenTool(), ScreenshotTool(), TapTool(), TypeTextTool(), ScrollTool(), SwipeTool(), GlobalActionTool())
 
     private fun tools(mode: RunMode, currentSession: () -> Long?): List<AgentTool> {
         val s = app.settings
         val all = buildList {
-            if (s.isEnabled(ToolGroup.PERSONAL)) addAll(
-                listOf(
-                    SearchContactsTool(app), ListSmsTool(app), SendSmsTool(app), ListCalendarEventsTool(app),
-                    CreateCalendarEventTool(app), ListCallLogTool(app), ListNotificationsTool(app),
-                )
-            )
-            if (s.isEnabled(ToolGroup.FILES)) addAll(listOf(ListFilesTool(app.workspace), ReadFileTool(app.workspace), WriteFileTool(app.workspace)))
-            if (s.isEnabled(ToolGroup.DEVICE)) addAll(listOf(DeviceStatusTool(app), ListAppsTool(app), OpenAppTool(app)))
-            if (s.isEnabled(ToolGroup.SCREEN) && mode == RunMode.INTERACTIVE) addAll(
-                listOf(ReadScreenTool(), ScreenshotTool(), TapTool(), TypeTextTool(), ScrollTool(), SwipeTool(), GlobalActionTool())
-            )
+            addAll(phoneTools(s))
+            if (s.isEnabled(ToolGroup.SCREEN) && mode == RunMode.INTERACTIVE) addAll(screenTools())
             if (s.isEnabled(ToolGroup.MEMORY)) addAll(
                 listOf(MemoryTool(app.memory), SkillViewTool(app.skills), SkillManageTool(app.skills), SessionSearchTool(app.sessions, currentSession))
             )
@@ -156,19 +151,19 @@ class AgentFactory(private val app: PocketAgentApp) {
 
         val UNATTENDED_PROMPT = """
             # This run
-            This is a scheduled automation running while nobody is watching. You have read-only tools. Do the task, then write a final report that will be shown as a notification: lead with what matters and keep it under 120 words. If the task calls for an action (sending, changing something), recommend it in the report instead of attempting it.
+            This is a scheduled automation running while nobody is watching. You have read-only tools; on the web you can run a few searches but not open pages. Do the task, then write a final report that will be shown as a notification: lead with what matters and keep it under 120 words. If the task calls for an action (sending, changing something), recommend it in the report instead of attempting it.
         """.trimIndent()
 
         val SUBAGENT_PROMPT = """
             # This run
-            You are a sub-agent doing one research task for another agent, which will read your answer. You have read-only tools. Return a concise, factual result with the specific details you found (names, times, numbers, sources) and say clearly what you could not find.
+            You are a sub-agent doing one research task for another agent, which will read your answer. You have read-only tools; on the web you can run a few searches but not open pages. Return a concise, factual result with the specific details you found (names, times, numbers, sources) and say clearly what you could not find.
         """.trimIndent()
     }
 }
 
 class DelegateTasksTool(private val factory: AgentFactory) : AgentTool(
     name = "delegate_tasks",
-    description = "Run up to 4 independent research tasks in parallel, each in a fresh read-only sub-agent (web, " +
+    description = "Run up to 4 independent research tasks in parallel, each in a fresh read-only sub-agent (web search, " +
         "messages, calendar, notifications, files, past chats), and get all results back together. Use it when a " +
         "request splits into separate lookups. Sub-agents can't see this chat, so write each task with all the " +
         "context it needs.",

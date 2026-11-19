@@ -22,7 +22,8 @@ class MainActivity : ComponentActivity() {
         val app = application as PocketAgentApp
         applySecureWindow(app.settings.secureWindow)
         voice = Voice(this)
-        assistLaunch.value = intent?.action == Intent.ACTION_ASSIST
+        // Only a fresh launch: after rotation the same intent comes back, and the gesture was already handled.
+        assistLaunch.value = savedInstanceState == null && intent?.action == Intent.ACTION_ASSIST
         setContent {
             AppRoot(app = app, voice = voice, assistLaunch = assistLaunch, onSecureWindowChanged = ::applySecureWindow)
         }
@@ -35,11 +36,11 @@ class MainActivity : ComponentActivity() {
 
     override fun onResume() {
         super.onResume()
-        (application as PocketAgentApp).approvals.uiVisible = true
+        (application as PocketAgentApp).approvals.setUiVisible(true)
     }
 
     override fun onPause() {
-        (application as PocketAgentApp).approvals.uiVisible = false
+        (application as PocketAgentApp).approvals.setUiVisible(false)
         super.onPause()
     }
 

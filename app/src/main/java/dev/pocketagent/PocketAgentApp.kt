@@ -2,7 +2,10 @@ package dev.pocketagent
 
 import android.app.Application
 import dev.pocketagent.agent.AgentFactory
+import android.app.NotificationManager
+import android.content.Intent
 import dev.pocketagent.bridge.BridgeService
+import dev.pocketagent.device.AgentRunService
 import dev.pocketagent.device.Notifications
 import dev.pocketagent.memory.MemoryStore
 import dev.pocketagent.memory.SessionStore
@@ -24,6 +27,11 @@ class PocketAgentApp : Application() {
     lateinit var factory: AgentFactory
     lateinit var controller: ChatController
 
+    /** Bumped by [wipeEverything]. A run that started before a wipe checks it and writes nothing afterwards. */
+    @Volatile
+    var dataEpoch = 0
+        private set
+
     override fun onCreate() {
         super.onCreate()
         settings = Settings(this)
@@ -44,8 +52,11 @@ class PocketAgentApp : Application() {
 
     /** Removes everything: API key, bridge token, settings, memory, skills, chat history, automations, workspace. */
     fun wipeEverything() {
+        dataEpoch++
         BridgeService.stop(this)
         controller.newChat()
+        // Stops running automations too; they also check dataEpoch before saving anything.
+        runCatching { startService(Intent(this, AgentRunService::class.java).setAction(AgentRunService.ACTION_STOP)) }
         scheduler.cancelAll()
         schedules.clear()
         memory.clear()
@@ -55,5 +66,7 @@ class PocketAgentApp : Application() {
         factory.forgetClient()
         secrets.wipe()
         settings.clear()
+        // Automation reports and approval prompts already in the notification shade are copies of wiped data.
+        getSystemService(NotificationManager::class.java).cancelAll()
     }
 }

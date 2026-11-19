@@ -75,8 +75,8 @@ Keep the app's **Network** permission on. This is the GrapheneOS per-app toggle,
 | Area | Tools | Approval |
 |---|---|---|
 | Personal data | search contacts, list/send SMS, list/create calendar events, call log, recent notifications | Reading runs without asking. Sending an SMS asks **every** time. Creating an event asks. |
-| Files | list/read/write in `Android/data/dev.pocketagent/files/workspace` | Writes ask |
-| Web | Anthropic web search and web fetch (these run on Anthropic's servers) | No prompt |
+| Files | list/read/write in `Android/data/<application id>/files/workspace` (`com.sovereignedge.pocketagent`; debug builds add `.debug`) | Writes ask |
+| Web | Anthropic web search and web fetch (these run on Anthropic's servers) | No prompt. Automations and sub-agents get a few searches and no fetch. |
 | Device | status, list apps, open app | Opening an app asks |
 | Screen control | read screen, screenshot, tap, type, scroll, swipe, back/home | Every action asks. You can choose "allow for this task" per tool. |
 | Memory | `memory` (MEMORY.md / USER.md), `skill_view`, `skill_manage`, `session_search` | Memory and skill writes run without asking in a live chat, and are refused in unattended runs |

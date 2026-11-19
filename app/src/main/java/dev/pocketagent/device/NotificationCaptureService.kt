@@ -42,7 +42,7 @@ class NotificationCaptureService : NotificationListenerService() {
         val item = Item(sbn.key, sbn.postTime, sbn.packageName, title, text)
         synchronized(buffer) {
             // Apps re-post the same notification as it updates; keep only the latest version.
-            buffer.removeAll { it.key == item.key && it.text == item.text && it.title == item.title }
+            buffer.removeAll { it.key == item.key }
             buffer.addLast(item)
             while (buffer.size > CAPACITY) buffer.removeFirst()
         }

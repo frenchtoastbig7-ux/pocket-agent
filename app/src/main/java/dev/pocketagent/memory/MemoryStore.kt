@@ -1,6 +1,7 @@
 package dev.pocketagent.memory
 
 import android.content.Context
+import dev.pocketagent.util.writeTextAtomic
 import java.io.File
 
 /**
@@ -27,7 +28,7 @@ class MemoryStore(context: Context) {
     @Synchronized
     fun setEntries(target: Target, entries: List<String>) {
         val cleaned = entries.map { it.trim() }.filter { it.isNotEmpty() }
-        File(dir, target.fileName).writeText(cleaned.joinToString(DELIMITER))
+        File(dir, target.fileName).writeTextAtomic(cleaned.joinToString(DELIMITER))
     }
 
     @Synchronized
@@ -46,6 +47,7 @@ class MemoryStore(context: Context) {
     fun replace(target: Target, oldText: String, content: String): String {
         val current = entries(target)
         val index = uniqueMatch(current, oldText)
+        require(content.isNotBlank()) { "content is required for replace. Use the remove action to delete an entry." }
         val next = current.toMutableList().apply { this[index] = content.trim() }
         checkLimit(target, next)
         setEntries(target, next)
@@ -59,6 +61,14 @@ class MemoryStore(context: Context) {
         val next = current.toMutableList().apply { removeAt(index) }
         setEntries(target, next)
         return "Removed. ${usage(target, next)}"
+    }
+
+    /** Removes exactly [entry] from what is stored now (the Memory screen's list can be older than the file). */
+    @Synchronized
+    fun forget(target: Target, entry: String) {
+        val current = entries(target)
+        val index = current.indexOf(entry.trim())
+        if (index >= 0) setEntries(target, current.toMutableList().apply { removeAt(index) })
     }
 
     /** Rendered once per session into the system prompt; mid-session edits apply from the next session. */

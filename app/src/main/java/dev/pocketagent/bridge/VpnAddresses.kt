@@ -28,11 +28,12 @@ object VpnAddresses {
                 found.putIfAbsent(addr.hostAddress!!, Candidate(addr.hostAddress!!, link.interfaceName.orEmpty(), label(addr)))
             }
         }
-        // Fallback for VPNs that don't register as a VPN network with ConnectivityManager.
+        // Fallback for VPNs that don't register as a VPN network with ConnectivityManager. Only the interface name
+        // counts: a 100.64.0.0/10 address alone proves nothing, since a Wi-Fi access point can hand one out too.
         runCatching {
             NetworkInterface.getNetworkInterfaces()?.toList().orEmpty().filter { it.isUp }.forEach { nif ->
                 nif.inetAddresses.toList().filterIsInstance<Inet4Address>().forEach { addr ->
-                    if (isVpnInterfaceName(nif.name) || isCgnat(addr)) {
+                    if (isVpnInterfaceName(nif.name)) {
                         found.putIfAbsent(addr.hostAddress!!, Candidate(addr.hostAddress!!, nif.name, label(addr)))
                     }
                 }

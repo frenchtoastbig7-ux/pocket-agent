@@ -32,22 +32,41 @@ class ApprovalBroker(private val context: Context) {
     /** True while MainActivity is resumed. */
     @Volatile
     var uiVisible = false
+        private set
+
+    /**
+     * True from the moment a prompt is requested until it is answered and taken down. Screen actions from every entry
+     * point (chat and bridge) refuse to run while this is set, so no tap or gesture can land on an Allow button.
+     */
+    @Volatile
+    var prompting = false
+        private set
 
     private val oneAtATime = Mutex()
+
+    /** Called on the main thread as MainActivity resumes and pauses. */
+    fun setUiVisible(visible: Boolean) {
+        uiVisible = visible
+        // A prompt that was showing in the app when the user left would otherwise wait with no sign outside the app.
+        val waiting = pending.value ?: return
+        if (visible) Notifications.clearApproval(context) else Notifications.approvalNeeded(context, waiting.title)
+    }
 
     suspend fun request(title: String, summary: String, forTaskLabel: String?, timeoutMs: Long? = null): ApprovalDecision =
         oneAtATime.withLock {
             val decision = CompletableDeferred<ApprovalDecision>()
-            withContext(Dispatchers.Main) {
-                val overlay = AgentAccessibilityService.instance
-                if (!uiVisible && overlay != null) {
-                    overlay.showApproval(title, summary, forTaskLabel) { decision.complete(it) }
-                } else {
-                    pending.value = PendingApproval(title, summary, forTaskLabel, decision)
-                    if (!uiVisible) Notifications.approvalNeeded(context, title)
-                }
-            }
+            // The try covers the setup too: a cancellation while returning from Main must still take the prompt down.
             try {
+                prompting = true
+                withContext(Dispatchers.Main) {
+                    val overlay = AgentAccessibilityService.instance
+                    if (!uiVisible && overlay != null) {
+                        overlay.showApproval(title, summary, forTaskLabel) { decision.complete(it) }
+                    } else {
+                        pending.value = PendingApproval(title, summary, forTaskLabel, decision)
+                        if (!uiVisible) Notifications.approvalNeeded(context, title)
+                    }
+                }
                 if (timeoutMs == null) decision.await()
                 else withTimeoutOrNull(timeoutMs) { decision.await() } ?: ApprovalDecision.DENY
             } finally {
@@ -55,11 +74,13 @@ class ApprovalBroker(private val context: Context) {
                     pending.value = null
                     AgentAccessibilityService.instance?.dismissApproval()
                     Notifications.clearApproval(context)
+                    prompting = false
                 }
             }
         }
 
-    fun resolve(decision: ApprovalDecision) {
-        pending.value?.decision?.complete(decision)
+    /** Answers [approval], the prompt the dialog is showing. A tap that arrives after it was replaced is ignored. */
+    fun resolve(approval: PendingApproval, decision: ApprovalDecision) {
+        if (pending.value === approval) approval.decision.complete(decision)
     }
 }

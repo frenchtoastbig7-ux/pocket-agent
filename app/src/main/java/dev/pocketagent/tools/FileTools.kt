@@ -17,7 +17,7 @@ import java.io.File
 import kotlin.math.max
 
 /**
- * The only part of storage file tools can touch: Android/data/dev.pocketagent/files/workspace.
+ * The only part of storage file tools can touch: Android/data/<application id>/files/workspace.
  * Every path is canonicalized and must stay inside it, so "../" and symlinks can't escape.
  */
 class Workspace(context: Context) {
@@ -65,14 +65,31 @@ class ReadFileTool(private val ws: Workspace) : AgentTool(
         val file = ws.resolve(input.str("path")) ?: return@withContext ToolOutput.error("Path is outside the workspace.")
         if (!file.isFile) return@withContext ToolOutput.error("${ws.relative(file)} does not exist.")
         if (file.extension.lowercase() in IMAGE_EXTENSIONS) {
-            val bmp = BitmapFactory.decodeFile(file.path) ?: return@withContext ToolOutput.error("Could not decode image.")
+            // Read the size first and decode at a reduced sample size: a full-resolution camera photo can be
+            // larger than the app's whole heap.
+            val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+            BitmapFactory.decodeFile(file.path, bounds)
+            if (bounds.outWidth <= 0 || bounds.outHeight <= 0) return@withContext ToolOutput.error("Could not decode image.")
+            var sample = 1
+            while (max(bounds.outWidth, bounds.outHeight) / (sample * 2) >= Images.MAX_EDGE) sample *= 2
+            val bmp = BitmapFactory.decodeFile(file.path, BitmapFactory.Options().apply { inSampleSize = sample })
+                ?: return@withContext ToolOutput.error("Could not decode image.")
             val scale = Images.MAX_EDGE.toFloat() / max(bmp.width, bmp.height)
-            return@withContext ToolOutput("Image ${ws.relative(file)} (${bmp.width}x${bmp.height})", Images.jpeg(bmp, scale))
+            return@withContext ToolOutput("Image ${ws.relative(file)} (${bounds.outWidth}x${bounds.outHeight})", Images.jpeg(bmp, scale))
         }
-        val text = file.readText()
+        // Never more than the limit in memory, however large the file is.
+        val buffer = CharArray(MAX_TEXT_CHARS + 1)
+        var read = 0
+        file.bufferedReader().use { reader ->
+            while (read < buffer.size) {
+                val n = reader.read(buffer, read, buffer.size - read)
+                if (n < 0) break
+                read += n
+            }
+        }
         ToolOutput(
-            if (text.length > MAX_TEXT_CHARS) text.take(MAX_TEXT_CHARS) + "\n[truncated: file has ${text.length} characters]"
-            else text
+            if (read > MAX_TEXT_CHARS) String(buffer, 0, MAX_TEXT_CHARS) + "\n[truncated: the file is ${file.length()} bytes]"
+            else String(buffer, 0, read)
         )
     }
 }

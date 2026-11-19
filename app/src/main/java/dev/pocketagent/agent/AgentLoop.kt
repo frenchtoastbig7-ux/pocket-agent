@@ -25,6 +25,7 @@ import com.anthropic.models.beta.messages.MessageCreateParams
 import com.fasterxml.jackson.databind.JsonNode
 import com.fasterxml.jackson.databind.ObjectMapper
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.coroutineScope
@@ -51,18 +52,22 @@ fun interface Approver {
 /**
  * The agent loop: streams a turn, runs client tools (asking the [Approver] where the risk policy says so), and
  * repeats until Claude ends its turn. History is append-only; a turn that can't be completed cleanly (refusal,
- * cancellation, error, length limit) is rolled back as a whole so the conversation is never left with an unanswered
- * tool call.
+ * cancellation, error, length limit) is rolled back so the conversation is never left with an unanswered tool call.
+ * The rollback stops at the last finished tool round: tools that already ran (a sent SMS, a written file) stay on
+ * record, so Claude can't forget an action it took and repeat it.
  */
 class AgentLoop(
-    private val client: AnthropicClient,
+    /** Replaceable so a chat keeps its history when the API key changes. */
+    @Volatile var client: AnthropicClient,
     private val model: String,
     private val effort: String,
     private val systemPrompt: String,
     tools: List<AgentTool>,
-    private val webTools: Boolean,
+    private val webTools: () -> Boolean,
     private val mode: RunMode,
     private val approver: Approver?,
+    /** Asked before every request and every tool call, so switching a capability off takes effect in a running chat. */
+    private val isEnabled: (ToolGroup) -> Boolean = { true },
 ) {
     private val history = mutableListOf<BetaMessageParam>()
     private val byName = tools.associateBy { it.name }
@@ -70,8 +75,8 @@ class AgentLoop(
     private val mapper = ObjectMapper()
 
     // Sorted so the tool block of the prompt is byte-identical on every request and stays cached.
-    private val apiTools: List<BetaTool> = tools.sortedBy { it.name }.map { tool ->
-        BetaTool.builder()
+    private val apiTools: List<Pair<AgentTool, BetaTool>> = tools.sortedBy { it.name }.map { tool ->
+        tool to BetaTool.builder()
             .name(tool.name)
             .description(tool.description)
             .inputSchema(
@@ -90,7 +95,9 @@ class AgentLoop(
     /** Sends one user message and runs the agent until it finishes. Returns the final reply text. */
     suspend fun send(text: String, images: List<ByteArray> = emptyList(), emit: suspend (AgentEvent) -> Unit): String =
         withContext(Dispatchers.IO) {
-            val mark = history.size
+            // Where a failed turn rolls back to. Moves forward past each tool round that has run.
+            var mark = history.size
+            var acted = false
             val blocks = images.map { BetaContentBlockParam.ofImage(jpegBlock(it)) } + BetaContentBlockParam.ofText(text)
             history += userMessage(blocks)
             allowedForTask.clear()
@@ -105,17 +112,19 @@ class AgentLoop(
                             history += assistantMessage(content)
                             val results = runTools(content.mapNotNull { it.toolUse().getOrNull() }, emit)
                             history += userMessage(results)
+                            mark = history.size
+                            acted = true
                         }
                         BetaStopReason.PAUSE_TURN -> history += assistantMessage(content)
                         BetaStopReason.REFUSAL -> {
                             rollback(mark)
                             val category = message.stopDetails().getOrNull()?.category()?.getOrNull()?.toString()
-                            emit(AgentEvent.Notice("Claude declined this request${category?.let { " ($it)" }.orEmpty()}. It was removed from the conversation."))
+                            emit(AgentEvent.Notice("Claude declined this request${category?.let { " ($it)" }.orEmpty()}. ${removed(acted)}"))
                             return@withContext ""
                         }
                         BetaStopReason.MAX_TOKENS -> {
                             rollback(mark)
-                            emit(AgentEvent.Notice("The reply hit the length limit and was removed from the conversation. Try asking for less at once."))
+                            emit(AgentEvent.Notice("The reply hit the length limit. ${removed(acted)} Try asking for less at once."))
                             return@withContext reply
                         }
                         BetaStopReason.MODEL_CONTEXT_WINDOW_EXCEEDED -> {
@@ -138,6 +147,10 @@ class AgentLoop(
             }
         }
 
+    private fun removed(acted: Boolean): String =
+        if (acted) "The unfinished reply was removed; the actions already taken stay in the conversation."
+        else "It was removed from the conversation."
+
     private fun rollback(mark: Int) {
         while (history.size > mark) history.removeAt(history.lastIndex)
     }
@@ -156,10 +169,17 @@ class AgentLoop(
             .addBeta(FALLBACK_BETA)
             .fallbacksDefault()
             .apply {
-                apiTools.forEach { addTool(it) }
-                if (webTools) {
-                    addTool(BetaWebSearchTool20260209.builder().build())
-                    addTool(BetaWebFetchTool20260209.builder().build())
+                apiTools.forEach { (tool, api) -> if (isEnabled(tool.group)) addTool(api) }
+                if (webTools()) {
+                    if (mode == RunMode.INTERACTIVE) {
+                        addTool(BetaWebSearchTool20260209.builder().build())
+                        addTool(BetaWebFetchTool20260209.builder().build())
+                    } else {
+                        // Server tools run inside the API call and never reach the approver. With nobody watching,
+                        // text the run reads (an SMS, a notification) could ask it to fetch a URL that carries
+                        // private data away, so these runs get a few searches and no fetch.
+                        addTool(BetaWebSearchTool20260209.builder().maxUses(UNATTENDED_SEARCHES).build())
+                    }
                 }
             }
             .build()
@@ -175,7 +195,8 @@ class AgentLoop(
         val response = client.beta().messages().createStreaming(params)
         coroutineScope {
             // Closing the response is the only way to interrupt the blocking read when the user taps Stop.
-            val closer = launch {
+            // Undispatched, so the watcher is already waiting before the first blocking read.
+            val closer = launch(start = CoroutineStart.UNDISPATCHED) {
                 try {
                     awaitCancellation()
                 } finally {
@@ -233,6 +254,9 @@ class AgentLoop(
             val input: JsonNode = runCatching { use._input().convert(JsonNode::class.java) }.getOrNull() ?: mapper.createObjectNode()
             val (output, status) = if (tool == null) {
                 ToolOutput.error("Unknown tool ${use.name()}.") to ToolStatus.ERROR
+            } else if (!isEnabled(tool.group)) {
+                emit(AgentEvent.ToolCall(use.id(), tool.name, tool.name))
+                ToolOutput.error("${tool.group.label} was switched off in Settings. Tell the user; don't retry.") to ToolStatus.DENIED
             } else {
                 val summary = runCatching { tool.summarize(input) }.getOrDefault(tool.name)
                 emit(AgentEvent.ToolCall(use.id(), tool.name, summary))
@@ -302,6 +326,7 @@ class AgentLoop(
     private companion object {
         const val MAX_STEPS = 80
         const val MAX_TOKENS = 64_000L
+        const val UNATTENDED_SEARCHES = 5L
         const val FALLBACK_BETA = "server-side-fallback-2026-07-01"
     }
 }
